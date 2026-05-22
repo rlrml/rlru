@@ -1,0 +1,61 @@
+[package]
+name = "rlru"
+version = "0.1.0"
+edition = "2021"
+description = "Rocket League replay uploader"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/colonelpanic8/rlru"
+
+[workspace]
+resolver = "2"
+members = [
+  "crates/rlru-dioxus",
+]
+
+[lib]
+name = "rlru"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rlru"
+path = "src/main.rs"
+
+[features]
+default = ["cli"]
+cli = ["dep:clap", "dep:tracing-subscriber", "dep:webbrowser"]
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"], optional = true }
+dirs = "6"
+futures-util = "0.3"
+hmac = "0.12"
+humantime-serde = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls", "gzip", "deflate", "brotli", "stream"] }
+secrecy = { version = "0.10", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+url = { version = "2", features = ["serde"] }
+webbrowser = { version = "1", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"

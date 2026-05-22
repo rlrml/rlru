@@ -1,0 +1,8 @@
+/target/
+/.direnv/
+/dist/
+/result
+/.env
+/.worktrees/
+/.playwright-cli/
+*.log

@@ -1,0 +1,6 @@
+[application]
+name = "RlruDioxus"
+
+[bundle]
+identifier = "org.colonelpanic.rlru.dioxus"
+publisher = "Ivan Malison"
