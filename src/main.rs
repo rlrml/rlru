@@ -6,7 +6,7 @@ use clap::{Parser, Subcommand};
 use rlru::auth::AuthManager;
 use rlru::config::Config;
 use rlru::paths::AppPaths;
-use rlru::sync::SyncService;
+use rlru::sync::{SyncOptions, SyncService};
 use rlru::upload::{ReplayUploader, UploadCache, UploadOutcome};
 
 #[derive(Debug, Parser)]
@@ -78,6 +78,18 @@ enum AuthCommand {
 #[derive(Debug, Subcommand)]
 enum SyncCommand {
     Once,
+    Backfill {
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long)]
+        rocket_sense: bool,
+        #[arg(long)]
+        all_targets: bool,
+        #[arg(long)]
+        respect_online_guard: bool,
+        #[arg(long)]
+        force: bool,
+    },
     Daemon,
 }
 
@@ -227,6 +239,35 @@ async fn handle_sync_command(
         SyncCommand::Once => {
             let config = Config::load_or_default(config_path)?;
             let summary = SyncService::new(paths, config).run_once().await?;
+            print_sync_summary(&summary);
+            Ok(())
+        }
+        SyncCommand::Backfill {
+            target,
+            rocket_sense,
+            all_targets,
+            respect_online_guard,
+            force,
+        } => {
+            let config = Config::load_or_default(config_path)?;
+            let target_name = if all_targets {
+                None
+            } else if rocket_sense {
+                Some("Rocket Sense".to_string())
+            } else if target.is_some() {
+                target
+            } else if config.target("Rocket Sense").is_some() {
+                Some("Rocket Sense".to_string())
+            } else {
+                None
+            };
+            let summary = SyncService::new(paths, config)
+                .run_once_with_options(SyncOptions {
+                    include_online: !respect_online_guard,
+                    target_name,
+                    force,
+                })
+                .await?;
             print_sync_summary(&summary);
             Ok(())
         }

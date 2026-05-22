@@ -22,6 +22,33 @@ pub struct SyncSummary {
     pub failed: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncOptions {
+    pub include_online: bool,
+    pub target_name: Option<String>,
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    pub account_name: String,
+    pub match_id: String,
+    pub record_start_timestamp: i64,
+    pub map_name: String,
+    pub playlist: i64,
+    pub team0_score: i64,
+    pub team1_score: i64,
+    pub replay_url: String,
+    pub upload_states: Vec<HistoryUploadState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryUploadState {
+    pub target_name: String,
+    pub upload_enabled: bool,
+    pub cached: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct SyncService {
     paths: AppPaths,
@@ -43,6 +70,10 @@ impl SyncService {
     }
 
     pub async fn run_once(&self) -> Result<SyncSummary> {
+        self.run_once_with_options(SyncOptions::default()).await
+    }
+
+    pub async fn run_once_with_options(&self, options: SyncOptions) -> Result<SyncSummary> {
         let mut summary = SyncSummary::default();
 
         let mut active_accounts = Vec::new();
@@ -62,11 +93,15 @@ impl SyncService {
             active_accounts.push(AuthenticatedAccount { account, token });
         }
 
-        let accounts_to_upload = self.filter_connected_accounts(active_accounts).await?;
+        let accounts_to_upload = if options.include_online {
+            active_accounts
+        } else {
+            self.filter_connected_accounts(active_accounts).await?
+        };
         for account in accounts_to_upload {
             summary.accounts_seen += 1;
             let account_summary = self
-                .sync_account(account.account, &account.token)
+                .sync_account(account.account, &account.token, &options)
                 .await
                 .with_context(|| {
                     format!(
@@ -77,6 +112,69 @@ impl SyncService {
             summary.merge(account_summary);
         }
         Ok(summary)
+    }
+
+    pub async fn current_history(&self, target_name: Option<&str>) -> Result<Vec<HistoryEntry>> {
+        let targets = self.upload_targets(target_name)?;
+        let caches = targets
+            .iter()
+            .map(|target| {
+                let cache = UploadCache::load(
+                    self.paths.upload_cache_path(&target.name),
+                    self.config.accounts.len(),
+                )?;
+                Ok((target, cache))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let mut entries = Vec::new();
+
+        for account in self
+            .config
+            .accounts
+            .iter()
+            .filter(|account| !account.unused)
+        {
+            let auth = AuthManager::new(&self.paths, account.profile_id);
+            let token = auth.restore_or_refresh().await.with_context(|| {
+                format!(
+                    "failed to restore auth for account {} (profile {})",
+                    account.name, account.profile_id
+                )
+            })?;
+            let rpc = self.psynet.auth_player(&token).await?;
+            let matches = rpc.get_match_history().await?;
+            let _ = rpc.close().await;
+
+            entries.extend(matches.into_iter().map(|entry| {
+                let match_id = entry.match_info.match_guid.clone();
+                HistoryEntry {
+                    account_name: account.name.clone(),
+                    match_id: match_id.clone(),
+                    record_start_timestamp: entry.match_info.record_start_timestamp,
+                    map_name: entry.match_info.map_name,
+                    playlist: entry.match_info.playlist,
+                    team0_score: entry.match_info.team0_score,
+                    team1_score: entry.match_info.team1_score,
+                    replay_url: entry.replay_url,
+                    upload_states: caches
+                        .iter()
+                        .map(|(target, cache)| HistoryUploadState {
+                            target_name: target.name.clone(),
+                            upload_enabled: target.replay_upload.enabled,
+                            cached: cache.contains(&match_id),
+                        })
+                        .collect(),
+                }
+            }));
+        }
+
+        entries.sort_by(|left, right| {
+            right
+                .record_start_timestamp
+                .cmp(&left.record_start_timestamp)
+                .then_with(|| left.account_name.cmp(&right.account_name))
+        });
+        Ok(entries)
     }
 
     async fn filter_connected_accounts<'a>(
@@ -137,6 +235,7 @@ impl SyncService {
         &self,
         account: &AccountConfig,
         token: &EosTokenResponse,
+        options: &SyncOptions,
     ) -> Result<SyncSummary> {
         let rpc = self.psynet.auth_player(token).await?;
         let profiles = rpc
@@ -156,21 +255,25 @@ impl SyncService {
 
         let matches = rpc.get_match_history().await?;
         let _ = rpc.close().await;
-        self.upload_matches(matches).await
+        self.upload_matches(matches, options).await
     }
 
-    async fn upload_matches(&self, matches: Vec<MatchEntry>) -> Result<SyncSummary> {
+    async fn upload_matches(
+        &self,
+        matches: Vec<MatchEntry>,
+        options: &SyncOptions,
+    ) -> Result<SyncSummary> {
         let mut summary = SyncSummary {
             matches_seen: matches.len(),
             ..SyncSummary::default()
         };
 
-        for target in self
-            .config
-            .storage
-            .iter()
-            .filter(|target| target.replay_upload.enabled)
-        {
+        for target in self.upload_targets(options.target_name.as_deref())? {
+            if !target.replay_upload.enabled {
+                summary.skipped += matches.len();
+                continue;
+            }
+
             let mut cache = UploadCache::load(
                 self.paths.upload_cache_path(&target.name),
                 self.config.accounts.len(),
@@ -178,7 +281,7 @@ impl SyncService {
 
             for replay in &matches {
                 let match_id = &replay.match_info.match_guid;
-                if cache.contains(match_id) {
+                if !options.force && cache.contains(match_id) {
                     summary.cached += 1;
                     continue;
                 }
@@ -221,6 +324,27 @@ impl SyncService {
         }
 
         Ok(summary)
+    }
+
+    fn upload_targets(
+        &self,
+        target_name: Option<&str>,
+    ) -> Result<Vec<&crate::config::StorageConfig>> {
+        match target_name {
+            Some(name) => {
+                let target = self
+                    .config
+                    .target(name)
+                    .with_context(|| format!("unknown storage target {name:?}"))?;
+                Ok(vec![target])
+            }
+            None => Ok(self
+                .config
+                .storage
+                .iter()
+                .filter(|target| target.replay_upload.enabled)
+                .collect()),
+        }
     }
 
     async fn download_replay(&self, replay: &MatchEntry) -> Result<PathBuf> {

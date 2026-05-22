@@ -58,14 +58,16 @@ fn load_desktop_settings() -> DesktopSettings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActiveView {
     Overview,
+    History,
     Accounts,
     Storage,
     Activity,
 }
 
 impl ActiveView {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Overview,
+        Self::History,
         Self::Accounts,
         Self::Storage,
         Self::Activity,
@@ -74,6 +76,7 @@ impl ActiveView {
     fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
+            Self::History => "History",
             Self::Accounts => "Accounts",
             Self::Storage => "Storage",
             Self::Activity => "Activity",
@@ -83,6 +86,7 @@ impl ActiveView {
     fn description(self) -> &'static str {
         match self {
             Self::Overview => "Local auth, typed config, replay upload targets",
+            Self::History => "Current RL API matches and Rocket Sense upload state",
             Self::Accounts => "Configured Rocket League account credentials",
             Self::Storage => "Upload destinations and replay storage state",
             Self::Activity => "Sync and uploader pipeline status",
@@ -138,6 +142,26 @@ struct StorageSummary {
     selected: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct HistoryRow {
+    account: String,
+    match_id: String,
+    timestamp: String,
+    map_name: String,
+    playlist: String,
+    score: String,
+    rocket_sense_state: String,
+    rocket_sense_uploaded: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct BackfillSummary {
+    uploaded: usize,
+    duplicates: usize,
+    cached: usize,
+    failed: usize,
+}
+
 fn main() {
     launch_app();
 }
@@ -177,11 +201,17 @@ fn launch_app() {
 #[component]
 fn App() -> Element {
     let mut summary = use_signal(load_summary);
+    let mut history = use_resource(load_history);
     let mut active_view = use_signal(|| ActiveView::Overview);
     let mut action_message = use_signal(String::new);
+    let mut history_message = use_signal(String::new);
+    let mut backfill_running = use_signal(|| false);
     let active = active_view();
     let current_summary = summary();
     let message = action_message();
+    let current_history = history.cloned();
+    let history_status = history_message();
+    let is_backfill_running = backfill_running();
 
     rsx! {
         document::Title { "rlru" }
@@ -221,6 +251,37 @@ fn App() -> Element {
                 match active {
                     ActiveView::Overview => rsx! {
                         OverviewView { summary: current_summary }
+                    },
+                    ActiveView::History => rsx! {
+                        HistoryView {
+                            history: current_history,
+                            message: history_status,
+                            backfill_running: is_backfill_running,
+                            onrefresh: move |_| {
+                                history.restart();
+                                history_message.set(String::new());
+                            },
+                            onbackfill: move |_| {
+                                backfill_running.set(true);
+                                history_message.set("Backfilling Rocket Sense from current RL API history".to_string());
+                                spawn(async move {
+                                    match backfill_rocket_sense().await {
+                                        Ok(summary) => {
+                                            history_message.set(format!(
+                                                "Backfill complete: {} uploaded, {} duplicates, {} cached, {} failed",
+                                                summary.uploaded,
+                                                summary.duplicates,
+                                                summary.cached,
+                                                summary.failed
+                                            ));
+                                            history.restart();
+                                        }
+                                        Err(error) => history_message.set(error),
+                                    }
+                                    backfill_running.set(false);
+                                });
+                            },
+                        }
                     },
                     ActiveView::Accounts => rsx! {
                         AccountsView { summary: current_summary }
@@ -353,6 +414,86 @@ fn OverviewView(summary: AppSummary) -> Element {
             div { class: "activity-row",
                 div { class: "status-dot" }
                 p { "Auth, PsyNet match history, replay download, upload, and cache handling are wired behind the CLI/library APIs." }
+            }
+        }
+    }
+}
+
+#[component]
+fn HistoryView(
+    history: Option<Result<Vec<HistoryRow>, String>>,
+    message: String,
+    backfill_running: bool,
+    onrefresh: EventHandler<()>,
+    onbackfill: EventHandler<()>,
+) -> Element {
+    let backfill_label = if backfill_running {
+        "Backfilling..."
+    } else {
+        "Backfill Rocket Sense"
+    };
+
+    rsx! {
+        section { class: "panel history-panel",
+            div { class: "panel-header",
+                h2 { "RL API History" }
+                div { class: "button-row",
+                    button {
+                        class: "secondary-button",
+                        onclick: move |_| onrefresh.call(()),
+                        "Refresh"
+                    }
+                    button {
+                        class: "primary-button",
+                        disabled: backfill_running,
+                        onclick: move |_| {
+                            if !backfill_running {
+                                onbackfill.call(());
+                            }
+                        },
+                        "{backfill_label}"
+                    }
+                }
+            }
+            if !message.is_empty() {
+                div { class: "notice", "{message}" }
+            }
+            match history {
+                None => rsx! {
+                    p { class: "empty-state", "Loading current match history..." }
+                },
+                Some(Err(error)) => rsx! {
+                    p { class: "empty-state error-state", "{error}" }
+                },
+                Some(Ok(rows)) => rsx! {
+                    if rows.is_empty() {
+                        p { class: "empty-state", "No current RL API history entries found." }
+                    } else {
+                        div { class: "history-table",
+                            div { class: "history-row history-heading",
+                                span { "Match" }
+                                span { "Account" }
+                                span { "When" }
+                                span { "Arena" }
+                                span { "Score" }
+                                span { "Rocket Sense" }
+                            }
+                            for row in rows {
+                                div { class: "history-row",
+                                    span { class: "mono-cell", "{short_match_id(&row.match_id)}" }
+                                    span { "{row.account}" }
+                                    span { "{row.timestamp}" }
+                                    span { "{row.map_name} / {row.playlist}" }
+                                    span { "{row.score}" }
+                                    span {
+                                        class: if row.rocket_sense_uploaded { "state-pill uploaded" } else { "state-pill missing" },
+                                        "{row.rocket_sense_state}"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
             }
         }
     }
@@ -631,6 +772,10 @@ fn show_window() {
     win.set_focus();
 }
 
+fn short_match_id(match_id: &str) -> &str {
+    match_id.get(..8).unwrap_or(match_id)
+}
+
 #[component]
 fn Metric(label: String, value: String) -> Element {
     rsx! {
@@ -639,6 +784,75 @@ fn Metric(label: String, value: String) -> Element {
             strong { "{value}" }
         }
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn load_history() -> Result<Vec<HistoryRow>, String> {
+    use rlru::paths::AppPaths;
+    use rlru::sync::SyncService;
+    use rlru::Config;
+
+    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
+    let config_path = paths.config_file();
+    let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
+    let service = SyncService::new(paths, config);
+    let entries = service
+        .current_history(Some("Rocket Sense"))
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(entries
+        .into_iter()
+        .map(|entry| {
+            let rocket_sense = entry
+                .upload_states
+                .iter()
+                .find(|state| state.target_name == "Rocket Sense");
+            let (rocket_sense_state, rocket_sense_uploaded) = match rocket_sense {
+                Some(state) if state.cached => ("Uploaded".to_string(), true),
+                Some(state) if !state.upload_enabled => ("Disabled".to_string(), false),
+                Some(_) => ("Not uploaded".to_string(), false),
+                None => ("Not configured".to_string(), false),
+            };
+            HistoryRow {
+                account: entry.account_name,
+                match_id: entry.match_id,
+                timestamp: entry.record_start_timestamp.to_string(),
+                map_name: entry.map_name,
+                playlist: entry.playlist.to_string(),
+                score: format!("{}-{}", entry.team0_score, entry.team1_score),
+                rocket_sense_state,
+                rocket_sense_uploaded,
+            }
+        })
+        .collect())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+async fn backfill_rocket_sense() -> Result<BackfillSummary, String> {
+    use rlru::paths::AppPaths;
+    use rlru::sync::{SyncOptions, SyncService};
+    use rlru::Config;
+
+    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
+    paths.ensure().map_err(|error| error.to_string())?;
+    let config_path = paths.config_file();
+    let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
+    let summary = SyncService::new(paths, config)
+        .run_once_with_options(SyncOptions {
+            include_online: true,
+            target_name: Some("Rocket Sense".to_string()),
+            force: false,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(BackfillSummary {
+        uploaded: summary.uploaded,
+        duplicates: summary.duplicates,
+        cached: summary.cached,
+        failed: summary.failed,
+    })
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -767,6 +981,42 @@ fn save_start_in_tray(enabled: bool) -> Result<AppSummary, String> {
 #[cfg(not(target_arch = "wasm32"))]
 fn save_exit_in_tray(enabled: bool) -> Result<AppSummary, String> {
     update_behavior(|behavior| behavior.exit_in_tray = enabled)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn load_history() -> Result<Vec<HistoryRow>, String> {
+    Ok(vec![
+        HistoryRow {
+            account: "colonelpanic8".to_string(),
+            match_id: "4E8409F8A8F4431DBF2412B30F2461B5".to_string(),
+            timestamp: "1700000000".to_string(),
+            map_name: "DFH Stadium".to_string(),
+            playlist: "13".to_string(),
+            score: "3-2".to_string(),
+            rocket_sense_state: "Uploaded".to_string(),
+            rocket_sense_uploaded: true,
+        },
+        HistoryRow {
+            account: "colonelpanic8".to_string(),
+            match_id: "F90812E5EFDA4CC4AC7903596F02E6AB".to_string(),
+            timestamp: "1699999000".to_string(),
+            map_name: "Mannfield".to_string(),
+            playlist: "13".to_string(),
+            score: "1-4".to_string(),
+            rocket_sense_state: "Not uploaded".to_string(),
+            rocket_sense_uploaded: false,
+        },
+    ])
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn backfill_rocket_sense() -> Result<BackfillSummary, String> {
+    Ok(BackfillSummary {
+        uploaded: 1,
+        duplicates: 0,
+        cached: 1,
+        failed: 0,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
