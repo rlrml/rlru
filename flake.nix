@@ -173,5 +173,12 @@
           '';
         };
       }
-    );
+    )
+    // {
+      nixosModules.default = import ./nix/nixos-module.nix self;
+      nixosModules.rlru = self.nixosModules.default;
+
+      homeManagerModules.default = import ./nix/home-manager-module.nix self;
+      homeManagerModules.rlru = self.homeManagerModules.default;
+    };
 }
