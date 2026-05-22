@@ -62,6 +62,8 @@
         };
         dioxusLinuxBuildInputs = lib.optionals isLinux [
           pkgs.dbus
+          pkgs.glib-networking
+          pkgs.gsettings-desktop-schemas
           pkgs.glib
           pkgs.gtk3
           pkgs.libappindicator-gtk3
@@ -82,6 +84,11 @@
           pkgs.xdotool
           pkgs.zlib
         ];
+        dioxusLinuxGsettingsDataDirs = lib.optionalString isLinux (lib.concatStringsSep ":" [
+          "${pkgs.gsettings-desktop-schemas}/share/gsettings-schemas/${pkgs.gsettings-desktop-schemas.name}"
+          "${pkgs.gtk3}/share/gsettings-schemas/${pkgs.gtk3.name}"
+        ]);
+        dioxusLinuxGioModuleDir = lib.optionalString isLinux "${pkgs.glib-networking}/lib/gio/modules";
         dioxusDarwinBuildInputs = lib.optionals isDarwin [
           pkgs.apple-sdk_15
         ];
@@ -92,6 +99,7 @@
           buildNoDefaultFeatures ? false,
           extraBuildInputs ? [],
           extraNativeBuildInputs ? [],
+          postFixup ? "",
         }:
           rustPlatform.buildRustPackage {
             inherit pname buildFeatures buildNoDefaultFeatures;
@@ -102,6 +110,7 @@
             cargoTestFlags = ["-p" cargoPackage];
             nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
             buildInputs = extraBuildInputs;
+            inherit postFixup;
           };
       in {
         formatter = pkgs.alejandra;
@@ -115,6 +124,14 @@
             buildNoDefaultFeatures = true;
             buildFeatures = ["desktop"];
             extraBuildInputs = dioxusLinuxBuildInputs ++ dioxusDarwinBuildInputs ++ [pkgs.openssl];
+            extraNativeBuildInputs = lib.optionals isLinux [pkgs.makeWrapper];
+            postFixup = lib.optionalString isLinux ''
+              wrapProgram $out/bin/rlru-dioxus \
+                --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath dioxusLinuxLibraryPathInputs} \
+                --prefix XDG_DATA_DIRS : ${dioxusLinuxGsettingsDataDirs} \
+                --set GIO_MODULE_DIR ${dioxusLinuxGioModuleDir} \
+                --set-default WEBKIT_DISABLE_DMABUF_RENDERER 1
+            '';
           };
         };
 
@@ -150,6 +167,10 @@
 
           LD_LIBRARY_PATH = lib.optionalString isLinux (lib.makeLibraryPath dioxusLinuxLibraryPathInputs);
           WEBKIT_DISABLE_DMABUF_RENDERER = "1";
+          shellHook = lib.optionalString isLinux ''
+            export XDG_DATA_DIRS="${dioxusLinuxGsettingsDataDirs}:''${XDG_DATA_DIRS:-}"
+            export GIO_MODULE_DIR="${dioxusLinuxGioModuleDir}"
+          '';
         };
       }
     );
