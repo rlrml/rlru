@@ -26,10 +26,10 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Linux bundles
+      - name: Build Linux binaries
         run: |
-          nix bundle --no-write-lock-file --out-link bundle-rlru .#packages.x86_64-linux.rlru
-          nix bundle --no-write-lock-file --out-link bundle-rlru-dioxus-desktop .#packages.x86_64-linux.rlru-dioxus-desktop
+          nix develop --command cargo build --release -p rlru
+          nix develop --command cargo build --release -p rlru-dioxus --no-default-features --features desktop
 
       - name: Package Linux binaries
         run: |
@@ -37,8 +37,8 @@ jobs:
 
           package="rlru-linux-x86_64"
           mkdir -p "dist/${package}/bin"
-          cp -L bundle-rlru "dist/${package}/bin/rlru"
-          cp -L bundle-rlru-dioxus-desktop "dist/${package}/bin/rlru-dioxus"
+          cp target/release/rlru "dist/${package}/bin/rlru"
+          cp target/release/rlru-dioxus "dist/${package}/bin/rlru-dioxus"
           chmod +x "dist/${package}/bin/"*
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
