@@ -54,6 +54,7 @@
           fenixPkgs.stable.rustfmt
           fenixPkgs.stable.rust-analyzer
           fenixPkgs.targets.wasm32-unknown-unknown.stable.rust-std
+          fenixPkgs.targets.x86_64-pc-windows-gnu.stable.rust-std
         ];
         rustPlatform = pkgs.makeRustPlatform {
           cargo = toolchain;
@@ -139,6 +140,8 @@
               pkgs.binaryen
               pkgs.dioxus-cli
               pkgs.just
+              pkgs.pkgsCross.mingwW64.stdenv.cc
+              pkgs.pkgsCross.mingwW64.windows.pthreads
               pkgs.openssl
               pkgs.pkg-config
               pkgs.wasm-bindgen-cli

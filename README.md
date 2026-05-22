@@ -14,6 +14,21 @@ just run -- --help
 just dioxus-desktop
 ```
 
+## Windows Builds From Linux
+
+The dev shell includes the Fenix `x86_64-pc-windows-gnu` Rust target and the
+MinGW linker toolchain. Build Windows executables from Linux with:
+
+```bash
+just windows-cli release
+just windows-dioxus release
+```
+
+The CLI executable lands under
+`target/x86_64-pc-windows-gnu/release/rlru.exe`. The Dioxus desktop executable
+lands under `target/x86_64-pc-windows-gnu/release/rlru-dioxus.exe`, with
+`WebView2Loader.dll` copied beside it.
+
 ## Configuration
 
 Print the effective default configuration:

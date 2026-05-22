@@ -7,6 +7,7 @@ dioxus_desktop_cmd := env_var_or_default(
   "RLRU_DIOXUS_DESKTOP_CMD",
   "dx serve --platform desktop --package rlru-dioxus --no-default-features --features desktop",
 )
+windows_target := "x86_64-pc-windows-gnu"
 
 run *args:
     {{rlru_cmd}} "$@"
@@ -18,6 +19,34 @@ check:
 
 fmt:
     cargo fmt --all
+
+windows-cli profile="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    release_arg=()
+    if [[ "{{profile}}" == "release" ]]; then
+      release_arg=(--release)
+    fi
+    cargo build --target {{windows_target}} -p rlru "${release_arg[@]}"
+
+windows-dioxus profile="debug":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target_profile="{{profile}}"
+    release_arg=()
+    if [[ "$target_profile" == "release" ]]; then
+      release_arg=(--release)
+    fi
+    cargo build \
+      --target {{windows_target}} \
+      -p rlru-dioxus \
+      --no-default-features \
+      --features desktop \
+      "${release_arg[@]}"
+    loader="$(find "target/{{windows_target}}/${target_profile}/build" -path '*/out/x64/WebView2Loader.dll' -print -quit)"
+    if [[ -n "$loader" ]]; then
+      cp "$loader" "target/{{windows_target}}/${target_profile}/WebView2Loader.dll"
+    fi
 
 dioxus-desktop *args:
     #!/usr/bin/env bash
