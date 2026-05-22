@@ -1,0 +1,91 @@
+name: Build distributable binaries
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    name: Linux x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Linux bundles
+        run: |
+          nix bundle --no-write-lock-file --out-link bundle-rlru .#rlru
+          nix bundle --no-write-lock-file --out-link bundle-rlru-dioxus-desktop .#rlru-dioxus-desktop
+
+      - name: Package Linux binaries
+        run: |
+          set -euo pipefail
+
+          package="rlru-linux-x86_64"
+          mkdir -p "dist/${package}/bin"
+          cp -L bundle-rlru "dist/${package}/bin/rlru"
+          cp -L bundle-rlru-dioxus-desktop "dist/${package}/bin/rlru-dioxus"
+          chmod +x "dist/${package}/bin/"*
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlru-linux-x86_64
+          path: dist/rlru-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Windows binaries
+        run: |
+          nix develop --command just windows-cli release
+          nix develop --command just windows-dioxus release
+
+      - name: Package Windows binaries
+        run: |
+          nix develop --command bash <<'EOF'
+          set -euo pipefail
+
+          package="rlru-windows-x86_64"
+          target_dir="target/x86_64-pc-windows-gnu/release"
+          mkdir -p "dist/${package}"
+          cp "${target_dir}/rlru.exe" "dist/${package}/"
+          cp "${target_dir}/rlru-dioxus.exe" "dist/${package}/"
+          if [[ -f "${target_dir}/WebView2Loader.dll" ]]; then
+            cp "${target_dir}/WebView2Loader.dll" "dist/${package}/"
+          fi
+          (cd dist && zip -r "${package}.zip" "${package}")
+          EOF
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlru-windows-x86_64
+          path: dist/rlru-windows-x86_64.zip
+          if-no-files-found: error

@@ -6,6 +6,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     flake-utils.url = "github:numtide/flake-utils";
+    bundlers = {
+      url = "github:NixOS/bundlers";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs = {
@@ -13,6 +17,7 @@
     nixpkgs,
     fenix,
     flake-utils,
+    bundlers,
   }:
     flake-utils.lib.eachDefaultSystem (
       system: let
@@ -22,6 +27,7 @@
         };
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
+        bundlePkgs = bundlers.bundlers.${system};
         sourceRoot = ./.;
         cleanSrc = lib.cleanSourceWith {
           src = sourceRoot;
@@ -121,6 +127,7 @@
           };
       in {
         formatter = pkgs.alejandra;
+        bundlers.default = bundlePkgs.toArx;
 
         packages = {
           default = mkRlruPackage {pname = "rlru";};
@@ -169,6 +176,7 @@
               pkgs.openssl
               pkgs.pkg-config
               pkgs.wasm-bindgen-cli
+              pkgs.zip
             ]
             ++ dioxusLinuxBuildInputs;
 
