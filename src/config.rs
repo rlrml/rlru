@@ -20,7 +20,11 @@ impl Default for Config {
         Self {
             behavior: BehaviorConfig::default(),
             accounts: vec![AccountConfig::default()],
-            storage: vec![StorageConfig::rocky(), StorageConfig::ballchasing()],
+            storage: vec![
+                StorageConfig::rocky(),
+                StorageConfig::ballchasing(),
+                StorageConfig::rocket_sense(),
+            ],
         }
     }
 }
@@ -250,6 +254,31 @@ impl StorageConfig {
         }
     }
 
+    pub fn rocket_sense() -> Self {
+        Self {
+            name: "Rocket Sense".to_string(),
+            url: Url::parse("http://127.0.0.1:8080/api/v1")
+                .expect("valid built-in Rocket Sense URL"),
+            predefined: true,
+            primary: false,
+            query: BTreeMap::new(),
+            auth: TargetAuth::BearerEnv {
+                variable: "ROCKET_SENSE_TOKEN".to_string(),
+            },
+            ping: PingConfig {
+                enabled: true,
+                path: "/health".to_string(),
+            },
+            replay_upload: ReplayUploadConfig {
+                enabled: true,
+                path: "/replays".to_string(),
+                file_field: "file".to_string(),
+                success_statuses: vec![201],
+                duplicate_statuses: vec![409],
+            },
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_name("storage name", &self.name)?;
         validate_http_url(&self.url)?;
@@ -280,18 +309,20 @@ impl Default for StorageConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TargetAuth {
+    #[default]
     None,
-    AuthorizationHeader { value: String },
-    Bearer { token: String },
-}
-
-impl Default for TargetAuth {
-    fn default() -> Self {
-        Self::None
-    }
+    AuthorizationHeader {
+        value: String,
+    },
+    Bearer {
+        token: String,
+    },
+    BearerEnv {
+        variable: String,
+    },
 }
 
 impl TargetAuth {
@@ -310,14 +341,25 @@ impl TargetAuth {
                 }
                 Ok(())
             }
+            Self::BearerEnv { variable } => {
+                validate_env_var_name("bearer token environment variable", variable)
+            }
         }
     }
 
-    pub fn header_value(&self) -> Option<String> {
+    pub fn header_value(&self) -> Result<Option<String>> {
         match self {
-            Self::None => None,
-            Self::AuthorizationHeader { value } => Some(value.clone()),
-            Self::Bearer { token } => Some(format!("Bearer {token}")),
+            Self::None => Ok(None),
+            Self::AuthorizationHeader { value } => Ok(Some(value.clone())),
+            Self::Bearer { token } => Ok(Some(format!("Bearer {token}"))),
+            Self::BearerEnv { variable } => {
+                let token = std::env::var(variable)
+                    .with_context(|| format!("{variable} must be set for bearer auth"))?;
+                if token.trim().is_empty() {
+                    bail!("{variable} cannot be empty");
+                }
+                Ok(Some(format!("Bearer {token}")))
+            }
         }
     }
 }
@@ -382,6 +424,21 @@ fn validate_name(label: &str, value: &str) -> Result<()> {
     }
     if value.contains(['\n', '\r', '\0']) {
         bail!("{label} cannot contain control characters");
+    }
+    Ok(())
+}
+
+fn validate_env_var_name(label: &str, value: &str) -> Result<()> {
+    validate_name(label, value)?;
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        bail!("{label} cannot be empty");
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        bail!("{label} must start with an ASCII letter or underscore");
+    }
+    if !chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric()) {
+        bail!("{label} must contain only ASCII letters, digits, and underscores");
     }
     Ok(())
 }
@@ -456,6 +513,29 @@ mod tests {
         assert_eq!(
             url.as_str(),
             "https://ballchasing.com/api/v2/upload?visibility=public"
+        );
+    }
+
+    #[test]
+    fn rocket_sense_defaults_to_local_api_upload() {
+        let target = StorageConfig::rocket_sense();
+
+        assert_eq!(
+            target
+                .endpoint_url(&target.replay_upload.path)
+                .unwrap()
+                .as_str(),
+            "http://127.0.0.1:8080/api/v1/replays"
+        );
+        assert_eq!(
+            target.endpoint_url(&target.ping.path).unwrap().as_str(),
+            "http://127.0.0.1:8080/api/v1/health"
+        );
+        assert_eq!(
+            target.auth,
+            TargetAuth::BearerEnv {
+                variable: "ROCKET_SENSE_TOKEN".to_string()
+            }
         );
     }
 }

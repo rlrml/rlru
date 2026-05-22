@@ -32,7 +32,7 @@ impl ReplayUploader {
             .request_with_auth(
                 self.http.get(target.endpoint_url(&target.ping.path)?),
                 &target.auth,
-            )
+            )?
             .send()
             .await
             .with_context(|| format!("failed to ping {}", target.name))?;
@@ -74,7 +74,7 @@ impl ReplayUploader {
                     .post(target.endpoint_url(&target.replay_upload.path)?)
                     .multipart(form),
                 &target.auth,
-            )
+            )?
             .send()
             .await
             .with_context(|| format!("failed to upload replay to {}", target.name))?;
@@ -96,11 +96,11 @@ impl ReplayUploader {
         &self,
         request: reqwest::RequestBuilder,
         auth: &TargetAuth,
-    ) -> reqwest::RequestBuilder {
-        match auth.header_value() {
+    ) -> Result<reqwest::RequestBuilder> {
+        Ok(match auth.header_value()? {
             Some(value) => request.header(AUTHORIZATION, value),
             None => request,
-        }
+        })
     }
 }
 
