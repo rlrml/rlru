@@ -26,21 +26,16 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Linux binaries
+      - name: Build Linux distribution archive
         run: |
-          nix develop --command cargo build --release -p rlru
-          nix develop --command cargo build --release -p rlru-dioxus --no-default-features --features desktop
+          nix build .#dist-linux-x86_64 --out-link result-linux
 
-      - name: Package Linux binaries
+      - name: Stage Linux artifact
         run: |
           set -euo pipefail
 
-          package="rlru-linux-x86_64"
-          mkdir -p "dist/${package}/bin"
-          cp target/release/rlru "dist/${package}/bin/rlru"
-          cp target/release/rlru-dioxus "dist/${package}/bin/rlru-dioxus"
-          chmod +x "dist/${package}/bin/"*
-          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+          mkdir -p dist
+          cp -L result-linux dist/rlru-linux-x86_64.tar.gz
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -62,26 +57,16 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Windows binaries
+      - name: Build Windows distribution archive
         run: |
-          nix develop --command just windows-cli release
-          nix develop --command just windows-dioxus release
+          nix build .#dist-windows-x86_64 --out-link result-windows
 
-      - name: Package Windows binaries
+      - name: Stage Windows artifact
         run: |
-          nix develop --command bash <<'EOF'
           set -euo pipefail
 
-          package="rlru-windows-x86_64"
-          target_dir="target/x86_64-pc-windows-gnu/release"
-          mkdir -p "dist/${package}"
-          cp "${target_dir}/rlru.exe" "dist/${package}/"
-          cp "${target_dir}/rlru-dioxus.exe" "dist/${package}/"
-          if [[ -f "${target_dir}/WebView2Loader.dll" ]]; then
-            cp "${target_dir}/WebView2Loader.dll" "dist/${package}/"
-          fi
-          (cd dist && zip -r "${package}.zip" "${package}")
-          EOF
+          mkdir -p dist
+          cp -L result-windows dist/rlru-windows-x86_64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4

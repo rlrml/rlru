@@ -46,6 +46,8 @@
         };
         isLinux = pkgs.stdenv.hostPlatform.isLinux;
         isDarwin = pkgs.stdenv.hostPlatform.isDarwin;
+        windowsTarget = "x86_64-pc-windows-gnu";
+        mingwPkgs = pkgs.pkgsCross.mingwW64;
         toolchain = fenixPkgs.combine [
           fenixPkgs.stable.cargo
           fenixPkgs.stable.clippy
@@ -119,12 +121,54 @@
               platforms = lib.platforms.unix ++ lib.platforms.windows;
             };
           };
+        mkWindowsPackage = {
+          pname,
+          cargoPackage ? "rlru",
+          buildFeatures ? [],
+          buildNoDefaultFeatures ? false,
+          installExtra ? "",
+        }:
+          rustPlatform.buildRustPackage {
+            inherit pname buildFeatures buildNoDefaultFeatures;
+            version = "0.1.0";
+            src = cleanSrc;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = ["-p" cargoPackage "--target" windowsTarget];
+            doCheck = false;
+            nativeBuildInputs = [
+              pkgs.pkg-config
+              mingwPkgs.stdenv.cc
+            ];
+            buildInputs = [
+              mingwPkgs.windows.pthreads
+            ];
+            "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}gcc";
+            "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}ar";
+            "CC_x86_64_pc_windows_gnu" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}gcc";
+            "AR_x86_64_pc_windows_gnu" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}ar";
+            installPhase = ''
+              runHook preInstall
+
+              install -Dm755 "target/${windowsTarget}/release/${pname}.exe" "$out/bin/${pname}.exe"
+              ${installExtra}
+
+              runHook postInstall
+            '';
+            meta = {
+              description = "Rocket League replay uploader for Windows";
+              homepage = "https://github.com/rlrml/rlru";
+              license = with lib.licenses; [mit asl20];
+              mainProgram = "${pname}.exe";
+              platforms = lib.platforms.all;
+            };
+          };
       in {
         formatter = pkgs.alejandra;
 
         packages = {
           default = mkRlruPackage {pname = "rlru";};
           rlru = mkRlruPackage {pname = "rlru";};
+          rlru-windows = mkWindowsPackage {pname = "rlru";};
           rlru-dioxus-desktop = mkRlruPackage {
             pname = "rlru-dioxus";
             cargoPackage = "rlru-dioxus";
@@ -140,6 +184,51 @@
                 --set-default WEBKIT_DISABLE_DMABUF_RENDERER 1
             '';
           };
+          rlru-dioxus-windows = mkWindowsPackage {
+            pname = "rlru-dioxus";
+            cargoPackage = "rlru-dioxus";
+            buildNoDefaultFeatures = true;
+            buildFeatures = ["desktop"];
+            installExtra = ''
+              loader="$(find "target/${windowsTarget}/release/build" -path '*/out/x64/WebView2Loader.dll' -print -quit || true)"
+              if [[ -n "$loader" ]]; then
+                install -Dm644 "$loader" "$out/bin/WebView2Loader.dll"
+              fi
+            '';
+          };
+          dist-linux-x86_64 =
+            pkgs.runCommand "rlru-linux-x86_64.tar.gz" {
+              nativeBuildInputs = [
+                pkgs.gnutar
+                pkgs.gzip
+              ];
+            } ''
+              package="rlru-linux-x86_64"
+              mkdir -p "$TMPDIR/$package/bin"
+              cp "${self.packages.${system}.rlru}/bin/rlru" "$TMPDIR/$package/bin/rlru"
+              if [[ -x "${self.packages.${system}.rlru-dioxus-desktop}/bin/.rlru-dioxus-wrapped" ]]; then
+                cp "${self.packages.${system}.rlru-dioxus-desktop}/bin/.rlru-dioxus-wrapped" "$TMPDIR/$package/bin/rlru-dioxus"
+              else
+                cp "${self.packages.${system}.rlru-dioxus-desktop}/bin/rlru-dioxus" "$TMPDIR/$package/bin/rlru-dioxus"
+              fi
+              chmod +x "$TMPDIR/$package/bin/"*
+              tar -C "$TMPDIR" -czf "$out" "$package"
+            '';
+          dist-windows-x86_64 =
+            pkgs.runCommand "rlru-windows-x86_64.zip" {
+              nativeBuildInputs = [
+                pkgs.zip
+              ];
+            } ''
+              package="rlru-windows-x86_64"
+              mkdir -p "$TMPDIR/$package"
+              cp "${self.packages.${system}.rlru-windows}/bin/rlru.exe" "$TMPDIR/$package/"
+              cp "${self.packages.${system}.rlru-dioxus-windows}/bin/rlru-dioxus.exe" "$TMPDIR/$package/"
+              if [[ -f "${self.packages.${system}.rlru-dioxus-windows}/bin/WebView2Loader.dll" ]]; then
+                cp "${self.packages.${system}.rlru-dioxus-windows}/bin/WebView2Loader.dll" "$TMPDIR/$package/"
+              fi
+              (cd "$TMPDIR" && zip -r "$out" "$package")
+            '';
         };
 
         apps = {
