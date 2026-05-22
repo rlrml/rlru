@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
+use secrecy::ExposeSecret;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 
@@ -141,7 +142,10 @@ impl SyncService {
                     account.name, account.profile_id
                 )
             })?;
-            let rpc = self.psynet.auth_player(&token).await?;
+            let rpc = self
+                .psynet
+                .auth_player(&token.account_id, token.access_token.expose_secret())
+                .await?;
             let matches = rpc.get_match_history().await?;
             let _ = rpc.close().await;
 
@@ -197,7 +201,10 @@ impl SyncService {
                 unused_account.profile_id
             )
         })?;
-        let rpc = self.psynet.auth_player(&token).await?;
+        let rpc = self
+            .psynet
+            .auth_player(&token.account_id, token.access_token.expose_secret())
+            .await?;
         let profile_ids = accounts
             .iter()
             .map(|account| {
@@ -237,7 +244,10 @@ impl SyncService {
         token: &EosTokenResponse,
         options: &SyncOptions,
     ) -> Result<SyncSummary> {
-        let rpc = self.psynet.auth_player(token).await?;
+        let rpc = self
+            .psynet
+            .auth_player(&token.account_id, token.access_token.expose_secret())
+            .await?;
         let profiles = rpc
             .get_profiles(vec![PlayerId::new(
                 account.platform.clone(),

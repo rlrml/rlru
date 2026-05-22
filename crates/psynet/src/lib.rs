@@ -10,7 +10,6 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
-use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use sha2::Sha256;
@@ -21,9 +20,6 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::HeaderName;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
-
-use crate::auth::EosTokenResponse;
-use crate::config::PlayerPlatform;
 
 const BASE_URL: &str = "https://api.rlpp.psynet.gg/rpc";
 const GAME_VERSION: &str = "260506.26700.517210";
@@ -52,22 +48,22 @@ impl PsyNetClient {
         }
     }
 
-    pub async fn auth_player(&self, token: &EosTokenResponse) -> Result<PsyNetRpc> {
-        let player_id = PlayerId::new(PlayerPlatform::Epic, &token.account_id);
+    pub async fn auth_player(&self, account_id: &str, access_token: &str) -> Result<PsyNetRpc> {
+        let player_id = PlayerId::new(PlayerPlatform::Epic, account_id);
         let request = AuthPlayerRequest {
             platform: "Epic".to_string(),
             player_name: String::new(),
-            player_id: token.account_id.clone(),
+            player_id: account_id.to_string(),
             language: "INT".to_string(),
-            auth_ticket: token.access_token.expose_secret().to_string(),
+            auth_ticket: access_token.to_string(),
             build_region: String::new(),
             feature_set: FEATURE_SET.to_string(),
             device: "PC".to_string(),
             local_first_player_id: player_id.to_string(),
             skip_auth: false,
             set_as_primary_account: true,
-            epic_auth_ticket: token.access_token.expose_secret().to_string(),
-            epic_account_id: token.account_id.clone(),
+            epic_auth_ticket: access_token.to_string(),
+            epic_account_id: account_id.to_string(),
         };
 
         let response: AuthPlayerResponse = self
@@ -342,6 +338,16 @@ impl std::fmt::Display for PlayerId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlayerPlatform {
+    Epic,
+    Steam,
+    PlayStation,
+    Xbox,
+    Nintendo,
 }
 
 impl PlayerPlatform {

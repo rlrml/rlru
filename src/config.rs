@@ -4,6 +4,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+pub use psynet::PlayerPlatform;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -184,16 +185,6 @@ impl AccountConfig {
     pub fn validate(&self) -> Result<()> {
         validate_name("account name", &self.name)
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum PlayerPlatform {
-    Epic,
-    Steam,
-    PlayStation,
-    Xbox,
-    Nintendo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

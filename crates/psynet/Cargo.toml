@@ -1,0 +1,26 @@
+[package]
+name = "psynet"
+version = "0.1.0"
+edition = "2021"
+description = "Rocket League PsyNet API client"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/colonelpanic8/rlru"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+futures-util = "0.3"
+hmac = "0.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value"] }
+sha2 = "0.10"
+tokio = { version = "1", features = ["net", "rt", "sync", "time"] }
+tracing = "0.1"
+
+[target.'cfg(windows)'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls", "gzip", "deflate", "brotli", "stream"] }
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+
+[target.'cfg(not(windows))'.dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "gzip", "deflate", "brotli", "stream"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }

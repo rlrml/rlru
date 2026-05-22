@@ -4113,6 +4113,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
+name = "psynet"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "futures-util",
+ "hmac",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
+]
+
+[[package]]
 name = "publicsuffix"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4548,18 +4565,15 @@ dependencies = [
  "chrono",
  "clap",
  "dirs",
- "futures-util",
- "hmac",
  "humantime-serde",
+ "psynet",
  "reqwest",
  "secrecy",
  "serde",
  "serde_json",
- "sha2",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
- "tokio-tungstenite",
  "toml",
  "tracing",
  "tracing-subscriber",
