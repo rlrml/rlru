@@ -111,6 +111,13 @@
             nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
             buildInputs = extraBuildInputs;
             inherit postFixup;
+            meta = {
+              description = "Rocket League replay uploader";
+              homepage = "https://github.com/rlrml/rlru";
+              license = with lib.licenses; [mit asl20];
+              mainProgram = pname;
+              platforms = lib.platforms.unix ++ lib.platforms.windows;
+            };
           };
       in {
         formatter = pkgs.alejandra;
