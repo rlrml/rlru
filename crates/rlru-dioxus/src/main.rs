@@ -1,42 +1,11 @@
 use dioxus::prelude::*;
 
-const APP_CSS: Asset = asset!("/assets/styles.css");
-const SHELL_STYLE: &str =
-    "display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh;width:100%;\
-     background:#f3f6f4;color:#18242b;font-family:Inter,ui-sans-serif,system-ui,-apple-system,\
-     BlinkMacSystemFont,'Segoe UI',sans-serif;";
-const SIDEBAR_STYLE: &str =
-    "background:#fff;border-right:1px solid #d8e0dd;display:flex;flex-direction:column;\
-     gap:22px;padding:22px 16px;";
-const NAV_STYLE: &str = "display:flex;flex-direction:column;gap:6px;";
-const NAV_BUTTON_STYLE: &str =
-    "background:transparent;border:0;border-radius:6px;color:#2b3941;cursor:pointer;\
-     font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;";
-const NAV_BUTTON_SELECTED_STYLE: &str =
-    "background:#e6efec;border:0;border-radius:6px;color:#176070;cursor:pointer;\
-     font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;";
-const WORKSPACE_STYLE: &str = "min-width:0;padding:26px;";
-const TOPBAR_STYLE: &str =
-    "align-items:center;display:flex;gap:16px;justify-content:space-between;margin-bottom:18px;";
-const MUTED_STYLE: &str = "color:#60727c;";
-const PRIMARY_BUTTON_STYLE: &str =
-    "background:#1d7187;border:0;border-radius:6px;color:white;cursor:pointer;font:inherit;\
-     font-weight:700;min-height:40px;padding:0 18px;";
-const SUMMARY_GRID_STYLE: &str =
-    "display:grid;gap:16px;grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px;";
-const SURFACE_STYLE: &str = "background:#fff;border:1px solid #d8e0dd;border-radius:8px;";
-const METRIC_STYLE: &str =
-    "background:#fff;border:1px solid #d8e0dd;border-radius:8px;display:flex;\
-     flex-direction:column;gap:8px;min-width:0;padding:16px;";
-const PANEL_STYLE: &str =
-    "background:#fff;border:1px solid #d8e0dd;border-radius:8px;margin-bottom:16px;padding:18px;";
-const PANEL_HEADER_STYLE: &str =
-    "align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:14px;";
-const DETAILS_STYLE: &str =
-    "display:grid;gap:8px 16px;grid-template-columns:max-content minmax(0,1fr);margin:0;";
-const ACTIVITY_ROW_STYLE: &str = "align-items:center;display:flex;gap:12px;";
-const STATUS_DOT_STYLE: &str =
-    "background:#2e9d71;border-radius:50%;flex:0 0 auto;height:10px;width:10px;";
+const APP_CSS: &str = include_str!("../assets/styles.css");
+
+#[cfg(feature = "desktop")]
+fn desktop_head() -> String {
+    format!("<style>{APP_CSS}</style>")
+}
 
 #[derive(Clone, Debug, PartialEq)]
 struct AppSummary {
@@ -48,6 +17,25 @@ struct AppSummary {
 }
 
 fn main() {
+    launch_app();
+}
+
+#[cfg(feature = "desktop")]
+fn launch_app() {
+    use dioxus::desktop::{Config, WindowBuilder};
+
+    dioxus::LaunchBuilder::desktop()
+        .with_cfg(
+            Config::new()
+                .with_custom_head(desktop_head())
+                .with_background_color((243, 246, 244, 255))
+                .with_window(WindowBuilder::new().with_title("rlru")),
+        )
+        .launch(App);
+}
+
+#[cfg(not(feature = "desktop"))]
+fn launch_app() {
     dioxus::launch(App);
 }
 
@@ -61,18 +49,24 @@ fn App() -> Element {
             name: "viewport",
             content: "width=device-width, initial-scale=1, viewport-fit=cover",
         }
-        document::Stylesheet { href: APP_CSS }
-        main { class: "shell", style: SHELL_STYLE,
+        document::Style { "{APP_CSS}" }
+        main {
+            class: "shell",
+            style: "display:grid;grid-template-columns:224px minmax(0,1fr);min-height:100vh;width:100%;background:#f3f6f4;color:#18242b;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:16px;",
             Sidebar {}
-            section { class: "workspace", style: WORKSPACE_STYLE,
-                header { class: "topbar", style: TOPBAR_STYLE,
+            section {
+                class: "workspace",
+                style: "min-width:0;padding:26px;",
+                header {
+                    class: "topbar",
+                    style: "align-items:center;display:flex;gap:16px;justify-content:space-between;margin-bottom:18px;",
                     div {
                         h1 { style: "font-size:1.55rem;margin:0;", "Replay Uploader" }
-                        p { style: "{MUTED_STYLE}margin:0;", "Local auth, typed config, replay upload targets" }
+                        p { style: "color:#60727c;margin:0;", "Local auth, typed config, replay upload targets" }
                     }
                     button {
                         class: "primary-button",
-                        style: PRIMARY_BUTTON_STYLE,
+                        style: "background:#1d7187;border:0;border-radius:6px;color:white;cursor:pointer;font:inherit;font-weight:700;min-height:40px;padding:0 18px;",
                         onclick: move |_| summary.set(load_summary()),
                         "Refresh"
                     }
@@ -86,13 +80,15 @@ fn App() -> Element {
 #[component]
 fn Sidebar() -> Element {
     rsx! {
-        aside { class: "sidebar", style: SIDEBAR_STYLE,
+        aside {
+            class: "sidebar",
+            style: "background:#fff;border-right:1px solid #d8e0dd;display:flex;flex-direction:column;gap:22px;padding:22px 16px;",
             strong { style: "font-size:1.15rem;", "rlru" }
-            nav { style: NAV_STYLE,
-                button { class: "nav-button selected", style: NAV_BUTTON_SELECTED_STYLE, "Overview" }
-                button { class: "nav-button", style: NAV_BUTTON_STYLE, "Accounts" }
-                button { class: "nav-button", style: NAV_BUTTON_STYLE, "Storage" }
-                button { class: "nav-button", style: NAV_BUTTON_STYLE, "Activity" }
+            nav { style: "display:flex;flex-direction:column;gap:6px;",
+                button { class: "nav-button selected", style: "background:#e6efec;border:0;border-radius:6px;color:#176070;cursor:pointer;font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;", "Overview" }
+                button { class: "nav-button", style: "background:transparent;border:0;border-radius:6px;color:#2b3941;cursor:pointer;font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;", "Accounts" }
+                button { class: "nav-button", style: "background:transparent;border:0;border-radius:6px;color:#2b3941;cursor:pointer;font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;", "Storage" }
+                button { class: "nav-button", style: "background:transparent;border:0;border-radius:6px;color:#2b3941;cursor:pointer;font:inherit;font-weight:700;min-height:38px;padding:0 10px;text-align:left;", "Activity" }
             }
         }
     }
@@ -108,30 +104,30 @@ fn Dashboard(summary: AppSummary) -> Element {
     .to_string();
 
     rsx! {
-        div { class: "summary-grid", style: SUMMARY_GRID_STYLE,
+        div { class: "summary-grid", style: "display:grid;gap:16px;grid-template-columns:repeat(3,minmax(0,1fr));margin-bottom:16px;",
             Metric { label: "Accounts", value: summary.account_count.to_string() }
             Metric { label: "Upload Targets", value: summary.storage_count.to_string() }
             Metric { label: "Auto Upload", value: auto_upload_value }
         }
-        section { class: "panel", style: PANEL_STYLE,
-            div { class: "panel-header", style: PANEL_HEADER_STYLE,
+        section { class: "panel", style: "background:#fff;border:1px solid #d8e0dd;border-radius:8px;margin-bottom:16px;padding:18px;",
+            div { class: "panel-header", style: "align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:14px;",
                 h2 { style: "font-size:1.05rem;margin:0;", "Configuration" }
-                span { style: MUTED_STYLE, "{summary.interval}" }
+                span { style: "color:#60727c;", "{summary.interval}" }
             }
-            dl { class: "details", style: DETAILS_STYLE,
-                dt { style: "{MUTED_STYLE}font-weight:700;", "Path" }
+            dl { class: "details", style: "display:grid;gap:8px 16px;grid-template-columns:max-content minmax(0,1fr);margin:0;",
+                dt { style: "color:#60727c;font-weight:700;", "Path" }
                 dd { style: "margin:0;min-width:0;overflow-wrap:anywhere;", "{summary.config_path}" }
-                dt { style: "{MUTED_STYLE}font-weight:700;", "State" }
+                dt { style: "color:#60727c;font-weight:700;", "State" }
                 dd { style: "margin:0;min-width:0;overflow-wrap:anywhere;", "Ready for auth, sync, and uploader runs" }
             }
         }
-        section { class: "panel", style: PANEL_STYLE,
-            div { class: "panel-header", style: PANEL_HEADER_STYLE,
+        section { class: "panel", style: "background:#fff;border:1px solid #d8e0dd;border-radius:8px;margin-bottom:16px;padding:18px;",
+            div { class: "panel-header", style: "align-items:center;display:flex;gap:12px;justify-content:space-between;margin-bottom:14px;",
                 h2 { style: "font-size:1.05rem;margin:0;", "Sync Pipeline" }
-                span { style: MUTED_STYLE, "PsyNet replay discovery" }
+                span { style: "color:#60727c;", "PsyNet replay discovery" }
             }
-            div { class: "activity-row", style: ACTIVITY_ROW_STYLE,
-                div { class: "status-dot", style: STATUS_DOT_STYLE }
+            div { class: "activity-row", style: "align-items:center;display:flex;gap:12px;",
+                div { class: "status-dot", style: "background:#2e9d71;border-radius:50%;flex:0 0 auto;height:10px;width:10px;" }
                 p { style: "margin:0;", "Auth, PsyNet match history, replay download, upload, and cache handling are wired behind the CLI/library APIs." }
             }
         }
@@ -141,8 +137,8 @@ fn Dashboard(summary: AppSummary) -> Element {
 #[component]
 fn Metric(label: String, value: String) -> Element {
     rsx! {
-        article { class: "metric", style: "{SURFACE_STYLE}{METRIC_STYLE}",
-            small { style: MUTED_STYLE, "{label}" }
+        article { class: "metric", style: "background:#fff;border:1px solid #d8e0dd;border-radius:8px;display:flex;flex-direction:column;gap:8px;min-width:0;padding:16px;",
+            small { style: "color:#60727c;", "{label}" }
             strong { style: "font-size:1.45rem;", "{value}" }
         }
     }
