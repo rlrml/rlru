@@ -1,6 +1,8 @@
 use dioxus::prelude::*;
 
 const APP_CSS: &str = include_str!("../assets/styles.css");
+#[cfg(feature = "desktop")]
+const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/rlru-icon-1024.png");
 
 #[cfg(feature = "desktop")]
 fn desktop_head() -> String {
@@ -168,7 +170,7 @@ fn main() {
 
 #[cfg(feature = "desktop")]
 fn launch_app() {
-    use dioxus::desktop::{Config, WindowBuilder, WindowCloseBehaviour};
+    use dioxus::desktop::{icon_from_memory, Config, WindowBuilder, WindowCloseBehaviour};
 
     let settings = load_desktop_settings();
     let close_behaviour = if settings.exit_in_tray {
@@ -176,20 +178,24 @@ fn launch_app() {
     } else {
         WindowCloseBehaviour::WindowCloses
     };
+    let mut config = Config::new()
+        .with_custom_head(desktop_head())
+        .with_data_directory(desktop_data_dir())
+        .with_background_color((243, 246, 244, 255))
+        .with_close_behaviour(close_behaviour)
+        .with_window(
+            WindowBuilder::new()
+                .with_title("rlru")
+                .with_visible(!settings.start_in_tray),
+        );
+
+    match icon_from_memory::<dioxus::desktop::tao::window::Icon>(APP_ICON_PNG) {
+        Ok(icon) => config = config.with_icon(icon),
+        Err(error) => eprintln!("Failed to load rlru window icon: {error}"),
+    }
 
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(
-            Config::new()
-                .with_custom_head(desktop_head())
-                .with_data_directory(desktop_data_dir())
-                .with_background_color((243, 246, 244, 255))
-                .with_close_behaviour(close_behaviour)
-                .with_window(
-                    WindowBuilder::new()
-                        .with_title("rlru")
-                        .with_visible(!settings.start_in_tray),
-                ),
-        )
+        .with_cfg(config)
         .launch(App);
 }
 
@@ -676,9 +682,9 @@ fn ActivityView(
 ))]
 #[component]
 fn DesktopTrayBridge(start_in_tray: bool) -> Element {
-    use dioxus::desktop::default_icon;
+    use dioxus::desktop::icon_from_memory;
     use dioxus::desktop::trayicon::menu::{Menu, MenuItem, PredefinedMenuItem};
-    use dioxus::desktop::trayicon::TrayIconBuilder;
+    use dioxus::desktop::trayicon::{DioxusTrayIcon, TrayIconBuilder};
     use dioxus::desktop::use_tray_menu_event_handler;
     use dioxus::desktop::{window, WindowCloseBehaviour};
 
@@ -699,7 +705,7 @@ fn DesktopTrayBridge(start_in_tray: bool) -> Element {
             .with_title("rlru")
             .with_tooltip("rlru");
 
-        match default_icon() {
+        match icon_from_memory::<DioxusTrayIcon>(APP_ICON_PNG) {
             Ok(icon) => builder = builder.with_icon(icon),
             Err(error) => eprintln!("Failed to load rlru tray icon: {error}"),
         }
