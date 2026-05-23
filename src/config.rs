@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 pub use psynet::PlayerPlatform;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,10 +80,14 @@ impl Config {
         }
 
         let mut account_ids = HashSet::new();
+        let mut auth_ids = HashSet::new();
         for account in &self.accounts {
             account.validate()?;
             if !account_ids.insert(account.id) {
                 bail!("duplicate account id {}", account.id);
+            }
+            if !auth_ids.insert(account.auth_id()) {
+                bail!("duplicate account auth id {}", account.auth_id());
             }
         }
 
@@ -168,32 +172,98 @@ impl BehaviorConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct AccountConfig {
     pub id: u32,
     pub name: String,
-    pub profile_id: u32,
+    #[serde(
+        default,
+        rename = "profile_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    legacy_profile_id: Option<u32>,
     pub platform: PlayerPlatform,
-    pub unused: bool,
+    #[serde(skip_serializing_if = "is_true")]
+    pub sync_enabled: bool,
 }
 
 impl Default for AccountConfig {
     fn default() -> Self {
-        Self {
-            id: 0,
-            name: "Primary".to_string(),
-            profile_id: 0,
-            platform: PlayerPlatform::Epic,
-            unused: false,
-        }
+        Self::new(0, "Primary".to_string(), PlayerPlatform::Epic, true)
     }
 }
 
 impl AccountConfig {
+    pub fn new(id: u32, name: String, platform: PlayerPlatform, sync_enabled: bool) -> Self {
+        Self {
+            id,
+            name,
+            legacy_profile_id: None,
+            platform,
+            sync_enabled,
+        }
+    }
+
+    pub fn auth_id(&self) -> u32 {
+        self.legacy_profile_id.unwrap_or(self.id)
+    }
+
+    pub fn legacy_profile_id(&self) -> Option<u32> {
+        self.legacy_profile_id
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_name("account name", &self.name)
     }
+}
+
+impl<'de> Deserialize<'de> for AccountConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let input = AccountConfigInput::deserialize(deserializer)?;
+        let sync_enabled = input
+            .sync_enabled
+            .unwrap_or_else(|| !input.unused.unwrap_or(false));
+
+        Ok(Self {
+            id: input.id,
+            name: input.name,
+            legacy_profile_id: input.legacy_profile_id,
+            platform: input.platform,
+            sync_enabled,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct AccountConfigInput {
+    id: u32,
+    name: String,
+    #[serde(rename = "profile_id")]
+    legacy_profile_id: Option<u32>,
+    platform: PlayerPlatform,
+    sync_enabled: Option<bool>,
+    unused: Option<bool>,
+}
+
+impl Default for AccountConfigInput {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            name: "Primary".to_string(),
+            legacy_profile_id: None,
+            platform: PlayerPlatform::Epic,
+            sync_enabled: None,
+            unused: None,
+        }
+    }
+}
+
+fn is_true(value: &bool) -> bool {
+    *value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -201,8 +271,10 @@ impl AccountConfig {
 pub struct UploadDestinationConfig {
     pub name: String,
     pub url: Url,
-    pub predefined: bool,
-    pub primary: bool,
+    #[serde(default, skip_serializing, rename = "predefined")]
+    _legacy_predefined: IgnoredLegacyBool,
+    #[serde(default, skip_serializing, rename = "primary")]
+    _legacy_primary: IgnoredLegacyBool,
     pub query: BTreeMap<String, String>,
     pub auth: TargetAuth,
     pub ping: PingConfig,
@@ -214,8 +286,8 @@ impl UploadDestinationConfig {
         Self {
             name: "Rocky".to_string(),
             url: Url::parse("https://lexore.ca/rocky/api").expect("valid built-in Rocky URL"),
-            predefined: true,
-            primary: true,
+            _legacy_predefined: IgnoredLegacyBool,
+            _legacy_primary: IgnoredLegacyBool,
             query: BTreeMap::new(),
             auth: TargetAuth::None,
             ping: PingConfig {
@@ -236,8 +308,8 @@ impl UploadDestinationConfig {
         Self {
             name: "Ballchasing".to_string(),
             url: Url::parse("https://ballchasing.com/api").expect("valid built-in Ballchasing URL"),
-            predefined: true,
-            primary: false,
+            _legacy_predefined: IgnoredLegacyBool,
+            _legacy_primary: IgnoredLegacyBool,
             query: BTreeMap::from([("visibility".to_string(), "public".to_string())]),
             auth: TargetAuth::None,
             ping: PingConfig {
@@ -259,8 +331,8 @@ impl UploadDestinationConfig {
             name: "Rocket Sense".to_string(),
             url: Url::parse("https://rocket-sense.duckdns.org/api/v1")
                 .expect("valid built-in Rocket Sense URL"),
-            predefined: true,
-            primary: false,
+            _legacy_predefined: IgnoredLegacyBool,
+            _legacy_primary: IgnoredLegacyBool,
             query: BTreeMap::new(),
             auth: TargetAuth::BearerEnv {
                 variable: "ROCKET_SENSE_TOKEN".to_string(),
@@ -306,6 +378,25 @@ impl UploadDestinationConfig {
 impl Default for UploadDestinationConfig {
     fn default() -> Self {
         Self::rocky()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq)]
+struct IgnoredLegacyBool;
+
+impl PartialEq for IgnoredLegacyBool {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl<'de> Deserialize<'de> for IgnoredLegacyBool {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        bool::deserialize(deserializer)?;
+        Ok(Self)
     }
 }
 
@@ -569,6 +660,60 @@ mod tests {
         let parsed: Config = toml::from_str(&legacy_toml).unwrap();
 
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn accepts_legacy_upload_destination_badge_fields_without_reserializing_them() {
+        let config = Config::default();
+        let toml = config.to_pretty_toml().unwrap();
+        let legacy_toml = toml.replacen(
+            "query = {}",
+            "predefined = true\nprimary = true\nquery = {}",
+            1,
+        );
+
+        let parsed: Config = toml::from_str(&legacy_toml).unwrap();
+        let serialized = parsed.to_pretty_toml().unwrap();
+
+        assert_eq!(parsed, config);
+        assert!(!serialized.contains("predefined ="));
+        assert!(!serialized.contains("primary ="));
+    }
+
+    #[test]
+    fn default_accounts_do_not_serialize_profile_ids() {
+        let toml = Config::default().to_pretty_toml().unwrap();
+
+        assert!(!toml.contains("profile_id"));
+    }
+
+    #[test]
+    fn accepts_legacy_account_profile_id_as_auth_id() {
+        let toml = Config::default().to_pretty_toml().unwrap();
+        let legacy_toml = toml.replacen("id = 0", "id = 42\nprofile_id = 7", 1);
+
+        let parsed: Config = toml::from_str(&legacy_toml).unwrap();
+
+        assert_eq!(parsed.accounts[0].id, 42);
+        assert_eq!(parsed.accounts[0].auth_id(), 7);
+        assert!(parsed.to_pretty_toml().unwrap().contains("profile_id = 7"));
+    }
+
+    #[test]
+    fn accepts_legacy_unused_account_field_as_sync_disabled() {
+        let toml = Config::default().to_pretty_toml().unwrap();
+        let legacy_toml = toml.replacen(
+            "platform = \"epic\"",
+            "platform = \"epic\"\nunused = true",
+            1,
+        );
+
+        let parsed: Config = toml::from_str(&legacy_toml).unwrap();
+        let serialized = parsed.to_pretty_toml().unwrap();
+
+        assert!(!parsed.accounts[0].sync_enabled);
+        assert!(serialized.contains("sync_enabled = false"));
+        assert!(!serialized.contains("unused ="));
     }
 
     #[test]

@@ -10,6 +10,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 use tokio::time::sleep;
 
+use crate::config::AccountConfig;
 use crate::paths::AppPaths;
 
 const EGS_USER_AGENT: &str =
@@ -29,10 +30,24 @@ pub struct AuthManager {
 }
 
 impl AuthManager {
-    pub fn new(paths: &AppPaths, profile_id: u32) -> Self {
+    pub fn new(paths: &AppPaths, account_id: u32) -> Self {
         Self {
             client: EpicClient::new(),
-            store: TokenStore::new(paths.tokens_dir(), profile_id),
+            store: TokenStore::new(paths.tokens_dir(), account_id, None),
+        }
+    }
+
+    pub fn for_legacy_profile(paths: &AppPaths, profile_id: u32) -> Self {
+        Self {
+            client: EpicClient::new(),
+            store: TokenStore::new(paths.tokens_dir(), profile_id, Some(profile_id)),
+        }
+    }
+
+    pub fn for_account(paths: &AppPaths, account: &AccountConfig) -> Self {
+        Self {
+            client: EpicClient::new(),
+            store: TokenStore::new(paths.tokens_dir(), account.id, account.legacy_profile_id()),
         }
     }
 
@@ -93,7 +108,7 @@ impl AuthManager {
             return Ok(eos);
         }
 
-        bail!("no saved auth token for profile {}", self.store.profile_id)
+        bail!("no saved auth token for account {}", self.store.account_id)
     }
 
     pub fn clear(&self) -> Result<()> {
@@ -324,20 +339,25 @@ pub struct DeviceAuthResponse {
 #[derive(Debug, Clone)]
 struct TokenStore {
     dir: PathBuf,
-    profile_id: u32,
+    account_id: u32,
+    legacy_profile_id: Option<u32>,
 }
 
 impl TokenStore {
-    fn new(dir: PathBuf, profile_id: u32) -> Self {
-        Self { dir, profile_id }
+    fn new(dir: PathBuf, account_id: u32, legacy_profile_id: Option<u32>) -> Self {
+        Self {
+            dir,
+            account_id,
+            legacy_profile_id,
+        }
     }
 
     fn read_egs_refresh(&self) -> Result<Option<SecretString>> {
-        read_secret(&self.egs_path())
+        read_secret_with_legacy(&self.egs_path(), self.legacy_egs_path().as_ref())
     }
 
     fn read_eos_refresh(&self) -> Result<Option<SecretString>> {
-        read_secret(&self.eos_path())
+        read_secret_with_legacy(&self.eos_path(), self.legacy_eos_path().as_ref())
     }
 
     fn save_egs_refresh(&self, refresh_token: &SecretString) -> Result<()> {
@@ -351,17 +371,33 @@ impl TokenStore {
     fn clear(&self) -> Result<()> {
         remove_if_exists(&self.egs_path())?;
         remove_if_exists(&self.eos_path())?;
+        if let Some(path) = self.legacy_egs_path() {
+            remove_if_exists(&path)?;
+        }
+        if let Some(path) = self.legacy_eos_path() {
+            remove_if_exists(&path)?;
+        }
         Ok(())
     }
 
     fn egs_path(&self) -> PathBuf {
         self.dir
-            .join(format!("profile-{}-egs.refresh", self.profile_id))
+            .join(format!("account-{}-egs.refresh", self.account_id))
     }
 
     fn eos_path(&self) -> PathBuf {
         self.dir
-            .join(format!("profile-{}-eos.refresh", self.profile_id))
+            .join(format!("account-{}-eos.refresh", self.account_id))
+    }
+
+    fn legacy_egs_path(&self) -> Option<PathBuf> {
+        self.legacy_profile_id
+            .map(|profile_id| self.dir.join(format!("profile-{profile_id}-egs.refresh")))
+    }
+
+    fn legacy_eos_path(&self) -> Option<PathBuf> {
+        self.legacy_profile_id
+            .map(|profile_id| self.dir.join(format!("profile-{profile_id}-eos.refresh")))
     }
 }
 
@@ -400,6 +436,21 @@ fn read_secret(path: &PathBuf) -> Result<Option<SecretString>> {
     } else {
         Ok(Some(SecretString::from(value)))
     }
+}
+
+fn read_secret_with_legacy(
+    path: &PathBuf,
+    legacy_path: Option<&PathBuf>,
+) -> Result<Option<SecretString>> {
+    if let Some(secret) = read_secret(path)? {
+        return Ok(Some(secret));
+    }
+
+    if let Some(legacy_path) = legacy_path {
+        return read_secret(legacy_path);
+    }
+
+    Ok(None)
 }
 
 fn write_secret(path: &PathBuf, value: &SecretString) -> Result<()> {
@@ -449,9 +500,9 @@ mod tests {
     }
 
     #[test]
-    fn token_store_uses_profile_specific_files() {
+    fn token_store_uses_account_specific_files() {
         let tmp = tempfile::tempdir().unwrap();
-        let store = TokenStore::new(tmp.path().to_path_buf(), 42);
+        let store = TokenStore::new(tmp.path().to_path_buf(), 42, None);
 
         store
             .save_eos_refresh(&SecretString::from("refresh-token".to_string()))
@@ -462,5 +513,27 @@ mod tests {
             "refresh-token"
         );
         assert!(store.read_egs_refresh().unwrap().is_none());
+    }
+
+    #[test]
+    fn token_store_reads_legacy_profile_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let legacy_path = tmp.path().join("profile-7-eos.refresh");
+        fs::write(&legacy_path, "legacy-refresh\n").unwrap();
+        let store = TokenStore::new(tmp.path().to_path_buf(), 42, Some(7));
+
+        assert_eq!(
+            store.read_eos_refresh().unwrap().unwrap().expose_secret(),
+            "legacy-refresh"
+        );
+
+        store
+            .save_eos_refresh(&SecretString::from("new-refresh".to_string()))
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("account-42-eos.refresh")).unwrap(),
+            "new-refresh\n"
+        );
     }
 }

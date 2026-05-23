@@ -94,15 +94,13 @@ impl SyncService {
             .config
             .accounts
             .iter()
-            .filter(|account| !account.unused)
+            .filter(|account| account.sync_enabled)
         {
-            let auth = AuthManager::new(&self.paths, account.profile_id);
-            let token = auth.restore_or_refresh().await.with_context(|| {
-                format!(
-                    "failed to restore auth for account {} (profile {})",
-                    account.name, account.profile_id
-                )
-            })?;
+            let auth = AuthManager::for_account(&self.paths, account);
+            let token = auth
+                .restore_or_refresh()
+                .await
+                .with_context(|| format!("failed to restore auth for account {}", account.name))?;
             active_accounts.push(AuthenticatedAccount { account, token });
         }
 
@@ -116,12 +114,7 @@ impl SyncService {
             let account_summary = self
                 .sync_account(account.account, &account.token, &options)
                 .await
-                .with_context(|| {
-                    format!(
-                        "failed to sync account {} (profile {})",
-                        account.account.name, account.account.profile_id
-                    )
-                })?;
+                .with_context(|| format!("failed to sync account {}", account.account.name))?;
             summary.merge(account_summary);
         }
         Ok(summary)
@@ -145,15 +138,13 @@ impl SyncService {
             .config
             .accounts
             .iter()
-            .filter(|account| !account.unused)
+            .filter(|account| account.sync_enabled)
         {
-            let auth = AuthManager::new(&self.paths, account.profile_id);
-            let token = auth.restore_or_refresh().await.with_context(|| {
-                format!(
-                    "failed to restore auth for account {} (profile {})",
-                    account.name, account.profile_id
-                )
-            })?;
+            let auth = AuthManager::for_account(&self.paths, account);
+            let token = auth
+                .restore_or_refresh()
+                .await
+                .with_context(|| format!("failed to restore auth for account {}", account.name))?;
             let rpc = self
                 .psynet
                 .auth_player(&token.account_id, token.access_token.expose_secret())
@@ -202,16 +193,20 @@ impl SyncService {
             return Ok(accounts);
         }
 
-        let Some(unused_account) = self.config.accounts.iter().find(|account| account.unused)
+        let Some(presence_account) = self
+            .config
+            .accounts
+            .iter()
+            .find(|account| !account.sync_enabled)
         else {
             return Ok(accounts);
         };
 
-        let auth = AuthManager::new(&self.paths, unused_account.profile_id);
+        let auth = AuthManager::for_account(&self.paths, presence_account);
         let token = auth.restore_or_refresh().await.with_context(|| {
             format!(
-                "failed to restore unused account auth for profile {}",
-                unused_account.profile_id
+                "failed to restore presence-check account auth for {}",
+                presence_account.name
             )
         })?;
         let rpc = self

@@ -219,16 +219,14 @@ enum ActiveView {
     History,
     Accounts,
     UploadDestinations,
-    Activity,
 }
 
 impl ActiveView {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 4] = [
         Self::Overview,
         Self::History,
         Self::Accounts,
         Self::UploadDestinations,
-        Self::Activity,
     ];
 
     fn label(self) -> &'static str {
@@ -237,7 +235,6 @@ impl ActiveView {
             Self::History => "History",
             Self::Accounts => "Accounts",
             Self::UploadDestinations => "Upload Destinations",
-            Self::Activity => "Activity",
         }
     }
 
@@ -246,8 +243,7 @@ impl ActiveView {
             Self::Overview => "Local auth, typed config, replay upload destinations",
             Self::History => "Current RL API matches and upload destination state",
             Self::Accounts => "Configured Rocket League account credentials",
-            Self::UploadDestinations => "Replay upload destinations and cache state",
-            Self::Activity => "Sync and uploader pipeline status",
+            Self::UploadDestinations => "Replay destinations, upload mode, and activity",
         }
     }
 }
@@ -283,18 +279,16 @@ impl AppSummary {
 struct AccountSummary {
     id: u32,
     name: String,
-    profile_id: u32,
     platform: String,
-    unused: bool,
+    sync_enabled: bool,
     selected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct AccountFormData {
     name: String,
-    profile_id: String,
     platform: String,
-    unused: bool,
+    sync_enabled: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -309,11 +303,9 @@ struct OverviewConfigFormData {
 struct UploadDestinationSummary {
     name: String,
     url: String,
-    primary: bool,
-    predefined: bool,
     upload_enabled: bool,
+    automatic: bool,
     auth: String,
-    selected: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -413,11 +405,14 @@ fn launch_app() {
 fn App() -> Element {
     let mut summary = use_signal(load_summary);
     let mut active_view = use_signal(|| ActiveView::Overview);
-    let mut history = use_resource(move || async move {
-        if active_view() == ActiveView::History {
+    let mut history_requested = use_signal(|| false);
+    let mut history_refresh_tick = use_signal(|| 0_u64);
+    let history = use_resource(move || async move {
+        if history_requested() {
+            let _ = history_refresh_tick();
             load_history().await
         } else {
-            Ok(Vec::new())
+            std::future::pending::<Result<Vec<HistoryRow>, String>>().await
         }
     });
     let mut action_message = use_signal(String::new);
@@ -429,12 +424,23 @@ fn App() -> Element {
     let active = active_view();
     let current_summary = summary();
     let message = action_message();
-    let current_history = history.cloned();
+    let history_has_been_requested = history_requested();
+    let current_history = if history_has_been_requested || active == ActiveView::History {
+        history.cloned()
+    } else {
+        Some(Ok(Vec::new()))
+    };
     let history_status = history_message();
     let is_backfill_running = backfill_running();
     let current_uploading_replay = uploading_replay();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
+
+    use_effect(move || {
+        if active_view() == ActiveView::History && !history_requested() {
+            history_requested.set(true);
+        }
+    });
 
     rsx! {
         document::Title { "rlru" }
@@ -480,7 +486,7 @@ fn App() -> Element {
                                 ),
                                 &run_summary.failed_uploads,
                             ));
-                            history.restart();
+                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }
                         Err(error) => {
                             sync_run.set(SyncRunState {
@@ -497,7 +503,8 @@ fn App() -> Element {
                 });
             },
             onrefreshhistory: move |_| {
-                history.restart();
+                history_requested.set(true);
+                history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                 history_message.set(String::new());
             },
             onretry: move |request: ReplayUploadRequest| {
@@ -542,7 +549,7 @@ fn App() -> Element {
                                 ),
                                 &run_summary.failed_uploads,
                             ));
-                            history.restart();
+                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }
                         Err(error) => {
                             sync_run.set(SyncRunState {
@@ -608,7 +615,8 @@ fn App() -> Element {
                             uploading: current_uploading_replay,
                             failed_uploads: current_failed_uploads,
                             onrefresh: move |_| {
-                                history.restart();
+                                history_requested.set(true);
+                                history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                 history_message.set(String::new());
                             },
                             onbackfill: move |_| {
@@ -643,7 +651,7 @@ fn App() -> Element {
                                                 ),
                                                 &run_summary.failed_uploads,
                                             ));
-                                            history.restart();
+                                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                         }
                                         Err(error) => {
                                             sync_run.set(SyncRunState {
@@ -701,7 +709,7 @@ fn App() -> Element {
                                                 ),
                                                 &run_summary.failed_uploads,
                                             ));
-                                            history.restart();
+                                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                         }
                                         Err(error) => {
                                             sync_run.set(SyncRunState {
@@ -743,10 +751,7 @@ fn App() -> Element {
                         }
                     },
                     ActiveView::UploadDestinations => rsx! {
-                        UploadDestinationsView { summary: current_summary }
-                    },
-                    ActiveView::Activity => rsx! {
-                        ActivityView {
+                        UploadDestinationsView {
                             summary: current_summary,
                             onautoupload: move |enabled| {
                                 match save_auto_upload(enabled) {
@@ -1069,11 +1074,9 @@ fn AccountsView(
 ) -> Element {
     let accounts = summary.accounts.clone();
     let account_count = accounts.len();
-    let next_profile_id_default = next_profile_id(&accounts).to_string();
     let mut account_name = use_signal(String::new);
-    let mut profile_id = use_signal(|| next_profile_id_default);
     let mut platform = use_signal(|| "epic".to_string());
-    let mut unused = use_signal(|| false);
+    let mut sync_enabled = use_signal(|| true);
     let mut confirming_remove = use_signal(|| None::<u32>);
     let can_remove = account_count > 1;
 
@@ -1093,15 +1096,6 @@ fn AccountsView(
                     }
                 }
                 label {
-                    span { "Profile" }
-                    input {
-                        r#type: "number",
-                        min: "0",
-                        value: "{profile_id}",
-                        oninput: move |event| profile_id.set(event.value()),
-                    }
-                }
-                label {
                     span { "Platform" }
                     select {
                         value: "{platform}",
@@ -1116,29 +1110,22 @@ fn AccountsView(
                 label { class: "checkbox-field",
                     input {
                         r#type: "checkbox",
-                        checked: unused(),
-                        oninput: move |event| unused.set(event.checked()),
+                        checked: sync_enabled(),
+                        oninput: move |event| sync_enabled.set(event.checked()),
                     }
-                    span { "Unused" }
+                    span { "Sync" }
                 }
                 button {
                     class: "primary-button form-submit",
                     onclick: move |_| {
                         onadd.call(AccountFormData {
                             name: account_name().trim().to_string(),
-                            profile_id: profile_id().trim().to_string(),
                             platform: platform(),
-                            unused: unused(),
+                            sync_enabled: sync_enabled(),
                         });
                         account_name.set(String::new());
-                        let next_profile_id = profile_id()
-                            .parse::<u32>()
-                            .unwrap_or(0)
-                            .saturating_add(1)
-                            .to_string();
-                        profile_id.set(next_profile_id);
                         platform.set("epic".to_string());
-                        unused.set(false);
+                        sync_enabled.set(true);
                     },
                     "Add Account"
                 }
@@ -1152,14 +1139,12 @@ fn AccountsView(
                                 if account.selected {
                                     span { class: "badge", "Selected" }
                                 }
-                                if account.unused {
-                                    span { class: "badge muted", "Unused" }
+                                if !account.sync_enabled {
+                                    span { class: "badge muted", "Sync off" }
                                 }
                             }
                             div { class: "row-meta",
                                 span { "{account.platform}" }
-                                span { "Profile {account.profile_id}" }
-                                span { "ID {account.id}" }
                             }
                         }
                         div { class: "row-actions",
@@ -1197,58 +1182,8 @@ fn AccountsView(
     }
 }
 
-fn next_profile_id(accounts: &[AccountSummary]) -> u32 {
-    accounts
-        .iter()
-        .map(|account| account.profile_id)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1)
-}
-
 #[component]
-fn UploadDestinationsView(summary: AppSummary) -> Element {
-    rsx! {
-        section { class: "panel compact-panel",
-            div { class: "panel-header",
-                h2 { "Upload Destinations" }
-                span { "{summary.upload_destination_count()} destinations" }
-            }
-            div { class: "account-list",
-                for target in summary.upload_destinations {
-                    article { class: "account-row",
-                        div {
-                            div { class: "row-title",
-                                strong { "{target.name}" }
-                                if target.selected {
-                                    span { class: "badge", "Selected" }
-                                }
-                                if target.primary {
-                                    span { class: "badge", "Primary" }
-                                }
-                                if target.predefined {
-                                    span { class: "badge muted", "Built-in" }
-                                }
-                            }
-                            div { class: "row-meta",
-                                span { "{target.url}" }
-                                span { "{target.auth}" }
-                                if target.upload_enabled {
-                                    span { "Uploads enabled" }
-                                } else {
-                                    span { "Uploads disabled" }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-#[component]
-fn ActivityView(summary: AppSummary, onautoupload: EventHandler<bool>) -> Element {
+fn UploadDestinationsView(summary: AppSummary, onautoupload: EventHandler<bool>) -> Element {
     let auto_upload_value = if summary.auto_upload {
         "Enabled"
     } else {
@@ -1274,35 +1209,68 @@ fn ActivityView(summary: AppSummary, onautoupload: EventHandler<bool>) -> Elemen
     };
 
     rsx! {
-        section { class: "panel compact-panel",
-            div { class: "panel-header",
-                h2 { "Activity" }
-                span { "{summary.interval}" }
-            }
-            div { class: "activity-row main-action",
-                div { class: if summary.auto_upload { "status-dot" } else { "status-dot off" } }
-                p { "Auto upload: {auto_upload_value}" }
-                button {
-                    class: "secondary-button",
-                    onclick: move |_| onautoupload.call(next_auto_upload),
-                    "{auto_upload_action}"
+        div { class: "destinations-view",
+            section { class: "panel destinations-panel",
+                div { class: "panel-header",
+                    h2 { "Upload Destinations" }
+                    span { "{summary.upload_destination_count()} destinations" }
+                }
+                div { class: "destination-list",
+                    for target in summary.upload_destinations {
+                        article { class: "account-row destination-row",
+                            div {
+                                div { class: "row-title",
+                                    strong { "{target.name}" }
+                                }
+                                div { class: "row-meta destination-meta",
+                                    span { "{target.url}" }
+                                    span { "{target.auth}" }
+                                    if target.upload_enabled {
+                                        span { "Enabled" }
+                                    } else {
+                                        span { "Disabled" }
+                                    }
+                                    if target.automatic {
+                                        span { "Automatic" }
+                                    } else {
+                                        span { "Manual" }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            div { class: "activity-row main-action",
-                div { class: "status-dot" }
-                p { "Startup: {startup_behavior_label}" }
-            }
-            div { class: "activity-row main-action",
-                div { class: "status-dot" }
-                p { "Window close: {close_behavior_label}" }
-            }
-            dl { class: "details",
-                dt { "Cadence" }
-                dd { "{summary.interval}, jitter up to {summary.jitter}" }
-                dt { "Launch" }
-                dd { "{upload_on_launch}" }
-                dt { "Guard" }
-                dd { "{connection_guard}" }
+            section { class: "panel destinations-panel",
+                div { class: "panel-header",
+                    h2 { "Upload Activity" }
+                    span { "{summary.interval}" }
+                }
+                div { class: "activity-row main-action",
+                    div { class: if summary.auto_upload { "status-dot" } else { "status-dot off" } }
+                    p { "Auto upload: {auto_upload_value}" }
+                    button {
+                        class: "secondary-button",
+                        onclick: move |_| onautoupload.call(next_auto_upload),
+                        "{auto_upload_action}"
+                    }
+                }
+                div { class: "activity-row main-action",
+                    div { class: "status-dot" }
+                    p { "Startup: {startup_behavior_label}" }
+                }
+                div { class: "activity-row main-action",
+                    div { class: "status-dot" }
+                    p { "Window close: {close_behavior_label}" }
+                }
+                dl { class: "details",
+                    dt { "Cadence" }
+                    dd { "{summary.interval}, jitter up to {summary.jitter}" }
+                    dt { "Launch" }
+                    dd { "{upload_on_launch}" }
+                    dt { "Guard" }
+                    dd { "{connection_guard}" }
+                }
             }
         }
     }
@@ -1870,6 +1838,17 @@ fn now_label() -> String {
         .to_string()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn format_record_start_timestamp(timestamp: i64) -> String {
+    use chrono::TimeZone;
+
+    chrono::Local
+        .timestamp_opt(timestamp, 0)
+        .single()
+        .map(|datetime| datetime.format("%Y-%m-%d %H:%M:%S %Z").to_string())
+        .unwrap_or_else(|| timestamp.to_string())
+}
+
 #[cfg(target_arch = "wasm32")]
 fn now_label() -> String {
     "now".to_string()
@@ -2073,7 +2052,7 @@ async fn load_history() -> Result<Vec<HistoryRow>, String> {
             HistoryRow {
                 account: entry.account_name,
                 match_id: entry.match_id,
-                timestamp: entry.record_start_timestamp.to_string(),
+                timestamp: format_record_start_timestamp(entry.record_start_timestamp),
                 map_name: entry.map_name,
                 playlist: entry.playlist.to_string(),
                 score: format!("{}-{}", entry.team0_score, entry.team1_score),
@@ -2174,6 +2153,7 @@ fn load_summary() -> AppSummary {
             let config = Config::load_or_default(&config_path).unwrap_or_default();
             let selected_account = config.behavior.selected_account.clone();
             let selected_upload_destination = config.behavior.selected_upload_destination.clone();
+            let auto_upload = config.behavior.auto_upload;
             AppSummary {
                 config_path: config_path.display().to_string(),
                 accounts: config
@@ -2182,9 +2162,8 @@ fn load_summary() -> AppSummary {
                     .map(|account| AccountSummary {
                         id: account.id,
                         name: account.name.clone(),
-                        profile_id: account.profile_id,
                         platform: platform_label(&account.platform).to_string(),
-                        unused: account.unused,
+                        sync_enabled: account.sync_enabled,
                         selected: selected_account.as_ref() == Some(&account.name),
                     })
                     .collect(),
@@ -2194,14 +2173,16 @@ fn load_summary() -> AppSummary {
                     .map(|target| UploadDestinationSummary {
                         name: target.name.clone(),
                         url: target.url.to_string(),
-                        primary: target.primary,
-                        predefined: target.predefined,
                         upload_enabled: target.replay_upload.enabled,
+                        automatic: auto_upload
+                            && target.replay_upload.enabled
+                            && selected_upload_destination
+                                .as_ref()
+                                .is_none_or(|selected| selected == &target.name),
                         auth: auth_label(&target.auth),
-                        selected: selected_upload_destination.as_ref() == Some(&target.name),
                     })
                     .collect(),
-                auto_upload: config.behavior.auto_upload,
+                auto_upload,
                 upload_on_launch: config.behavior.upload_on_launch,
                 no_upload_while_connected: config.behavior.no_upload_while_connected,
                 selected_account,
@@ -2305,24 +2286,11 @@ fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
         return Err("Account name is required".to_string());
     }
 
-    let profile_id = input
-        .profile_id
-        .parse::<u32>()
-        .map_err(|_| "Profile must be a non-negative whole number".to_string())?;
     let platform = parse_platform(&input.platform)?;
 
     update_config(|config| {
         if config.accounts.iter().any(|account| account.name == name) {
             return Err(format!("Account {name:?} already exists"));
-        }
-        if config
-            .accounts
-            .iter()
-            .any(|account| account.profile_id == profile_id)
-        {
-            return Err(format!(
-                "Profile {profile_id} is already used by another account"
-            ));
         }
 
         let next_id = config
@@ -2332,13 +2300,12 @@ fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        config.accounts.push(AccountConfig {
-            id: next_id,
-            name: name.to_string(),
-            profile_id,
-            platform: platform.clone(),
-            unused: input.unused,
-        });
+        config.accounts.push(AccountConfig::new(
+            next_id,
+            name.to_string(),
+            platform.clone(),
+            input.sync_enabled,
+        ));
         Ok(())
     })
 }
@@ -2485,19 +2452,16 @@ fn load_summary() -> AppSummary {
         accounts: vec![AccountSummary {
             id: 1,
             name: "colonelpanic8".to_string(),
-            profile_id: 1,
             platform: "Epic".to_string(),
-            unused: false,
+            sync_enabled: true,
             selected: true,
         }],
         upload_destinations: vec![UploadDestinationSummary {
             name: "Rocket Sense".to_string(),
             url: "https://rocket-sense.duckdns.org/api/v1".to_string(),
-            primary: true,
-            predefined: true,
             upload_enabled: true,
+            automatic: true,
             auth: "Bearer env token".to_string(),
-            selected: true,
         }],
         auto_upload: true,
         upload_on_launch: false,
@@ -2519,10 +2483,6 @@ fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
         return Err("Account name is required".to_string());
     }
 
-    let profile_id = input
-        .profile_id
-        .parse::<u32>()
-        .map_err(|_| "Profile must be a non-negative whole number".to_string())?;
     let mut summary = load_summary();
     let next_id = summary
         .accounts
@@ -2534,9 +2494,8 @@ fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
     summary.accounts.push(AccountSummary {
         id: next_id,
         name: name.to_string(),
-        profile_id,
         platform: platform_preview_label(&input.platform).to_string(),
-        unused: input.unused,
+        sync_enabled: input.sync_enabled,
         selected: false,
     });
     Ok(summary)

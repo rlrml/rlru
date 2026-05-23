@@ -30,8 +30,10 @@ enum Command {
         command: ConfigCommand,
     },
     Auth {
-        #[arg(long, default_value_t = 0)]
-        profile_id: u32,
+        #[arg(long)]
+        account: Option<String>,
+        #[arg(long, hide = true)]
+        profile_id: Option<u32>,
         #[command(subcommand)]
         command: AuthCommand,
     },
@@ -114,9 +116,10 @@ async fn main() -> Result<()> {
     match cli.command {
         Command::Config { command } => handle_config_command(command, &config_path),
         Command::Auth {
+            account,
             profile_id,
             command,
-        } => handle_auth_command(command, &paths, profile_id).await,
+        } => handle_auth_command(command, &paths, &config_path, account, profile_id).await,
         Command::UploadFile {
             target,
             path,
@@ -159,9 +162,11 @@ fn handle_config_command(command: ConfigCommand, config_path: &Path) -> Result<(
 async fn handle_auth_command(
     command: AuthCommand,
     paths: &AppPaths,
-    profile_id: u32,
+    config_path: &Path,
+    account: Option<String>,
+    profile_id: Option<u32>,
 ) -> Result<()> {
-    let auth = AuthManager::new(paths, profile_id);
+    let (auth, account_label) = resolve_auth_manager(paths, config_path, account, profile_id)?;
     match command {
         AuthCommand::LoginUrl { open } => {
             let url = auth.login_url();
@@ -198,10 +203,57 @@ async fn handle_auth_command(
         }
         AuthCommand::Clear => {
             auth.clear()?;
-            println!("cleared tokens for profile {profile_id}");
+            println!("cleared tokens for {account_label}");
             Ok(())
         }
     }
+}
+
+fn resolve_auth_manager(
+    paths: &AppPaths,
+    config_path: &Path,
+    account: Option<String>,
+    profile_id: Option<u32>,
+) -> Result<(AuthManager, String)> {
+    if let Some(profile_id) = profile_id {
+        return Ok((
+            AuthManager::for_legacy_profile(paths, profile_id),
+            format!("legacy profile {profile_id}"),
+        ));
+    }
+
+    let config = Config::load_or_default(config_path)?;
+    let account_config = match account {
+        Some(account) => {
+            let account_id = account.parse::<u32>().ok();
+            config
+                .accounts
+                .iter()
+                .find(|candidate| {
+                    candidate.name == account.as_str() || account_id == Some(candidate.id)
+                })
+                .with_context(|| format!("unknown account {account:?}"))?
+        }
+        None => {
+            if let Some(selected) = config.behavior.selected_account.as_deref() {
+                config
+                    .accounts
+                    .iter()
+                    .find(|candidate| candidate.name == selected)
+                    .with_context(|| format!("selected account {selected:?} does not exist"))?
+            } else {
+                config
+                    .accounts
+                    .first()
+                    .context("config must define at least one account")?
+            }
+        }
+    };
+
+    Ok((
+        AuthManager::for_account(paths, account_config),
+        format!("account {}", account_config.name),
+    ))
 }
 
 async fn handle_upload_file(

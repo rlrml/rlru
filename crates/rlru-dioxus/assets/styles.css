@@ -177,6 +177,11 @@ small,
   max-width: 760px;
 }
 
+.destinations-panel {
+  max-width: none;
+  width: calc(100vw - 224px - 52px);
+}
+
 .panel-header {
   align-items: center;
   display: flex;
@@ -276,6 +281,20 @@ small,
   display: grid;
   gap: 12px;
   grid-template-columns: repeat(auto-fit, minmax(280px, 420px));
+}
+
+.destination-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 1fr;
+}
+
+.destination-row {
+  width: 100%;
+}
+
+.destination-meta {
+  grid-template-columns: minmax(220px, 1fr) repeat(3, max-content);
 }
 
 .account-form {
@@ -547,6 +566,10 @@ a.state-pill {
     padding: 18px 16px;
   }
 
+  .destinations-panel {
+    width: calc(100vw - 32px);
+  }
+
   .topbar,
   .panel-header {
     align-items: flex-start;
@@ -558,6 +581,10 @@ a.state-pill {
   }
 
   .account-list {
+    grid-template-columns: 1fr;
+  }
+
+  .destination-meta {
     grid-template-columns: 1fr;
   }
 
