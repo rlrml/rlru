@@ -13,6 +13,35 @@ permissions:
   contents: read
 
 jobs:
+  checks:
+    name: Format, lint, and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check Nix formatting
+        run: |
+          nix fmt -- --check .
+
+      - name: Check Rust formatting
+        run: |
+          nix develop --command cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: |
+          nix develop --command cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run tests
+        run: |
+          nix develop --command cargo test --workspace
+
   linux:
     name: Linux CLI x86_64
     runs-on: ubuntu-latest
