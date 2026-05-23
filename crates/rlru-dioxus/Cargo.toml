@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Dioxus client for rlru"
 license = "MIT OR Apache-2.0"
+publish = false
 
 [[bin]]
 name = "rlru-dioxus"

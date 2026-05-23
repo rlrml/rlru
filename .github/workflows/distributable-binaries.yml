@@ -116,3 +116,144 @@ jobs:
           name: rlru-dioxus-linux-x86_64-appimage
           path: dist/rlru-dioxus-linux-x86_64.AppImage
           if-no-files-found: error
+
+  cargo-package:
+    name: Cargo package check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Check Cargo packages
+        run: |
+          nix develop --command cargo package -p psynet --allow-dirty
+          echo "rlru is packaged by cargo publish after psynet is visible on crates.io"
+
+  cargo-publish:
+    name: Publish Cargo packages
+    runs-on: ubuntu-latest
+    needs:
+      - cargo-package
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Validate release tag
+        run: |
+          set -euo pipefail
+
+          version="$(nix develop --command cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "rlru") | .version')"
+          psynet_version="$(nix develop --command cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "psynet") | .version')"
+
+          if [[ "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "release tag $GITHUB_REF_NAME does not match rlru version $version" >&2
+            exit 1
+          fi
+
+          if [[ "$psynet_version" != "$version" ]]; then
+            echo "psynet version $psynet_version does not match rlru version $version" >&2
+            exit 1
+          fi
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${CARGO_REGISTRY_TOKEN:-}" ]]; then
+            echo "CARGO_REGISTRY_TOKEN secret is required to publish crates" >&2
+            exit 1
+          fi
+
+          crate_version() {
+            nix develop --command cargo metadata --no-deps --format-version 1 \
+              | jq -r ".packages[] | select(.name == \"$1\") | .version"
+          }
+
+          crate_exists() {
+            local crate="$1"
+            local version="$2"
+
+            curl -fsS "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1
+          }
+
+          publish_crate() {
+            local crate="$1"
+            local version
+            version="$(crate_version "$crate")"
+
+            if crate_exists "$crate" "$version"; then
+              echo "$crate $version is already published; skipping"
+              return
+            fi
+
+            nix develop --command cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN"
+          }
+
+          wait_for_crate() {
+            local crate="$1"
+            local version
+            version="$(crate_version "$crate")"
+
+            for _ in {1..30}; do
+              if crate_exists "$crate" "$version"; then
+                return
+              fi
+              sleep 10
+            done
+
+            echo "$crate $version did not become visible on crates.io in time" >&2
+            exit 1
+          }
+
+          publish_crate psynet
+          wait_for_crate psynet
+          publish_crate rlru
+
+  github-release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs:
+      - linux
+      - windows
+      - linux-appimage
+      - cargo-publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --verify-tag
+          fi
