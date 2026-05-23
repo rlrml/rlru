@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, LOCATION};
 use reqwest::StatusCode;
 use serde_json::Value;
 
-use crate::config::{TargetAuth, UploadDestinationConfig};
+use crate::config::UploadDestinationConfig;
 
 const HISTORY_PER_ACCOUNT: usize = 20;
 const MAX_CACHE_SIZE_FACTOR: usize = 2;
@@ -30,12 +30,24 @@ impl ReplayUploader {
         if !target.ping.enabled {
             return Ok(());
         }
+        let auth_header = target.auth.header_value()?;
+        self.ping_with_auth_header(target, auth_header).await
+    }
+
+    async fn ping_with_auth_header(
+        &self,
+        target: &UploadDestinationConfig,
+        auth_header: Option<String>,
+    ) -> Result<()> {
+        if !target.ping.enabled {
+            return Ok(());
+        }
 
         let response = self
-            .request_with_auth(
+            .request_with_auth_header(
                 self.http.get(target.endpoint_url(&target.ping.path)?),
-                &target.auth,
-            )?
+                auth_header,
+            )
             .send()
             .await
             .with_context(|| format!("failed to ping {}", target.name))?;
@@ -71,7 +83,9 @@ impl ReplayUploader {
             });
         }
 
-        self.ping(target).await?;
+        let auth_header = target.auth.header_value()?;
+        self.ping_with_auth_header(target, auth_header.clone())
+            .await?;
 
         let file_name = match match_id {
             Some(match_id) => format!("{match_id}.replay"),
@@ -88,12 +102,12 @@ impl ReplayUploader {
             reqwest::multipart::Form::new().part(target.replay_upload.file_field.clone(), part);
 
         let response = self
-            .request_with_auth(
+            .request_with_auth_header(
                 self.http
                     .post(target.endpoint_url(&target.replay_upload.path)?)
                     .multipart(form),
-                &target.auth,
-            )?
+                auth_header,
+            )
             .send()
             .await
             .with_context(|| format!("failed to upload replay to {}", target.name))?;
@@ -110,15 +124,15 @@ impl ReplayUploader {
         classify_upload_response(target, status, location, &body)
     }
 
-    fn request_with_auth(
+    fn request_with_auth_header(
         &self,
         request: reqwest::RequestBuilder,
-        auth: &TargetAuth,
-    ) -> Result<reqwest::RequestBuilder> {
-        Ok(match auth.header_value()? {
+        auth_header: Option<String>,
+    ) -> reqwest::RequestBuilder {
+        match auth_header {
             Some(value) => request.header(AUTHORIZATION, value),
             None => request,
-        })
+        }
     }
 }
 

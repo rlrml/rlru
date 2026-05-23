@@ -3,6 +3,12 @@ use dioxus::prelude::*;
 const APP_CSS: &str = include_str!("../assets/styles.css");
 #[cfg(feature = "desktop")]
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/rlru-icon-1024.png");
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+const DESKTOP_INSTANCE_SOCKET: &str = "rlru-dioxus.sock";
 
 #[cfg(feature = "desktop")]
 fn desktop_head() -> String {
@@ -52,6 +58,191 @@ fn load_desktop_settings() -> DesktopSettings {
                 })
         })
         .unwrap_or_default()
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+type DesktopWindow = dioxus::desktop::tao::window::Window;
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+type DesktopWindowHandle = std::sync::Arc<DesktopWindow>;
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+type SharedDesktopWindows = std::sync::Arc<std::sync::Mutex<Vec<DesktopWindowHandle>>>;
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn shared_desktop_windows() -> SharedDesktopWindows {
+    std::sync::Arc::new(std::sync::Mutex::new(Vec::new()))
+}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn desktop_instance_socket_path() -> std::path::PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join(DESKTOP_INSTANCE_SOCKET)
+}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn notify_existing_desktop_instance() -> bool {
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+
+    UnixStream::connect(desktop_instance_socket_path())
+        .and_then(|mut stream| stream.write_all(b"show\n"))
+        .is_ok()
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn restore_desktop_window(window: &DesktopWindow) {
+    window.set_visible(true);
+    window.set_minimized(false);
+    window.set_focus();
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn restore_desktop_window_handle(window: DesktopWindowHandle) {
+    restore_desktop_window(&window);
+
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(75));
+        restore_desktop_window(&window);
+
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        window.set_focus();
+    });
+}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn restore_desktop_windows(windows: &SharedDesktopWindows) {
+    let Ok(windows) = windows.lock() else {
+        return;
+    };
+
+    for window in windows.iter() {
+        restore_desktop_window_handle(window.clone());
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn run_desktop_instance_listener(
+    listener: std::os::unix::net::UnixListener,
+    windows: SharedDesktopWindows,
+) {
+    use std::io::Read;
+
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else {
+                continue;
+            };
+
+            let mut message = [0_u8; 16];
+            if stream.read(&mut message).is_ok() {
+                restore_desktop_windows(&windows);
+            }
+        }
+    });
+}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn start_desktop_instance_listener(windows: SharedDesktopWindows) -> bool {
+    use std::os::unix::net::UnixListener;
+
+    let socket_path = desktop_instance_socket_path();
+    if let Some(parent) = socket_path.parent() {
+        if let Err(error) = std::fs::create_dir_all(parent) {
+            eprintln!("Failed to create rlru instance socket directory: {error}");
+            return true;
+        }
+    }
+
+    match UnixListener::bind(&socket_path) {
+        Ok(listener) => {
+            run_desktop_instance_listener(listener, windows);
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            if notify_existing_desktop_instance() {
+                return false;
+            }
+
+            if let Err(remove_error) = std::fs::remove_file(&socket_path) {
+                eprintln!("Failed to remove stale rlru instance socket: {remove_error}");
+                return true;
+            }
+
+            match UnixListener::bind(&socket_path) {
+                Ok(listener) => {
+                    run_desktop_instance_listener(listener, windows);
+                    true
+                }
+                Err(error) => {
+                    eprintln!("Failed to bind rlru instance socket after stale cleanup: {error}");
+                    true
+                }
+            }
+        }
+        Err(error) => {
+            eprintln!("Failed to bind rlru instance socket: {error}");
+            true
+        }
+    }
+}
+
+#[cfg(any(
+    not(feature = "desktop"),
+    not(unix),
+    target_os = "ios",
+    target_os = "android"
+))]
+#[allow(dead_code)]
+fn cleanup_desktop_instance_socket() {}
+
+#[cfg(all(
+    feature = "desktop",
+    unix,
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn cleanup_desktop_instance_socket() {
+    let _ = std::fs::remove_file(desktop_instance_socket_path());
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +373,7 @@ struct HistoryUploadDestination {
 struct ReplayUploadRequest {
     target_name: String,
     match_id: String,
+    reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -212,16 +404,29 @@ fn launch_app() {
     use dioxus::desktop::{icon_from_memory, Config, WindowBuilder, WindowCloseBehaviour};
 
     let settings = load_desktop_settings();
+    let windows = shared_desktop_windows();
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    {
+        if notify_existing_desktop_instance() {
+            return;
+        }
+
+        if !start_desktop_instance_listener(windows.clone()) {
+            return;
+        }
+    }
+
     let mut config = Config::new()
         .with_custom_head(desktop_head())
         .with_data_directory(desktop_data_dir())
         .with_background_color((243, 246, 244, 255))
         .with_close_behaviour(WindowCloseBehaviour::WindowCloses)
-        .with_window(
-            WindowBuilder::new()
-                .with_title("rlru")
-                .with_visible(!settings.start_in_tray),
-        );
+        .with_on_window(move |window, _| {
+            if let Ok(mut windows) = windows.lock() {
+                windows.push(window);
+            }
+        })
+        .with_window(WindowBuilder::new().with_title("rlru").with_visible(true));
 
     match icon_from_memory::<dioxus::desktop::tao::window::Icon>(APP_ICON_PNG) {
         Ok(icon) => config = config.with_icon(icon),
@@ -302,7 +507,7 @@ fn App() -> Element {
                                     run_summary.cached,
                                     run_summary.failed
                                 ),
-                                &run_summary.failed_match_ids,
+                                &run_summary.failed_uploads,
                             ));
                             history.restart();
                         }
@@ -343,11 +548,9 @@ fn App() -> Element {
                     match upload_history_replay(request.clone()).await {
                         Ok(run_summary) => {
                             let mut failures = failed_uploads();
-                            failures.retain(|failure| failure != &request);
+                            failures.retain(|failure| !is_same_upload_request(failure, &request));
                             for failure in &run_summary.failed_uploads {
-                                if !failures.contains(failure) {
-                                    failures.push(failure.clone());
-                                }
+                                upsert_failed_upload(&mut failures, failure.clone());
                             }
                             failed_uploads.set(failures);
                             sync_run.set(SyncRunState {
@@ -366,7 +569,7 @@ fn App() -> Element {
                                     run_summary.cached,
                                     run_summary.failed
                                 ),
-                                &run_summary.failed_match_ids,
+                                &run_summary.failed_uploads,
                             ));
                             history.restart();
                         }
@@ -467,7 +670,7 @@ fn App() -> Element {
                                                 run_summary.cached,
                                                 run_summary.failed
                                                 ),
-                                                &run_summary.failed_match_ids,
+                                                &run_summary.failed_uploads,
                                             ));
                                             history.restart();
                                         }
@@ -504,11 +707,9 @@ fn App() -> Element {
                                     match upload_history_replay(request.clone()).await {
                                         Ok(run_summary) => {
                                             let mut failures = failed_uploads();
-                                            failures.retain(|failure| failure != &request);
+                                            failures.retain(|failure| !is_same_upload_request(failure, &request));
                                             for failure in &run_summary.failed_uploads {
-                                                if !failures.contains(failure) {
-                                                    failures.push(failure.clone());
-                                                }
+                                                upsert_failed_upload(&mut failures, failure.clone());
                                             }
                                             failed_uploads.set(failures);
                                             sync_run.set(SyncRunState {
@@ -527,7 +728,7 @@ fn App() -> Element {
                                                 run_summary.cached,
                                                 run_summary.failed
                                                 ),
-                                                &run_summary.failed_match_ids,
+                                                &run_summary.failed_uploads,
                                             ));
                                             history.restart();
                                         }
@@ -832,6 +1033,7 @@ fn HistoryView(
                                                     } else if destination.upload_enabled {
                                                         button {
                                                             class: "compact-button",
+                                                            title: "{upload_failure_reason(&failed_uploads, &destination.target_name, &row.match_id)}",
                                                             disabled: uploading.is_some(),
                                                             onclick: {
                                                                 let target_name = destination.target_name.clone();
@@ -840,13 +1042,16 @@ fn HistoryView(
                                                                     onupload.call(ReplayUploadRequest {
                                                                         target_name: target_name.clone(),
                                                                         match_id: match_id.clone(),
+                                                                        reason: None,
                                                                     });
                                                                 }
                                                             },
-                                                            if uploading.as_ref().is_some_and(|request| request.target_name == destination.target_name && request.match_id == row.match_id) {
-                                                                "Linking"
+                                                            if uploading.as_ref().is_some_and(|request| is_same_upload(request, &destination.target_name, &row.match_id)) {
+                                                                "Trying upload"
+                                                            } else if failed_upload(&failed_uploads, &destination.target_name, &row.match_id).is_some() {
+                                                                "Retry upload"
                                                             } else {
-                                                                "Link"
+                                                                "Get link"
                                                             }
                                                         }
                                                     } else {
@@ -863,6 +1068,7 @@ fn HistoryView(
                                                 } else {
                                                     button {
                                                         class: "compact-button",
+                                                        title: "{upload_failure_reason(&failed_uploads, &destination.target_name, &row.match_id)}",
                                                         disabled: uploading.is_some(),
                                                         onclick: {
                                                             let target_name = destination.target_name.clone();
@@ -871,12 +1077,13 @@ fn HistoryView(
                                                                 onupload.call(ReplayUploadRequest {
                                                                     target_name: target_name.clone(),
                                                                     match_id: match_id.clone(),
+                                                                    reason: None,
                                                                 });
                                                             }
                                                         },
-                                                        if uploading.as_ref().is_some_and(|request| request.target_name == destination.target_name && request.match_id == row.match_id) {
+                                                        if uploading.as_ref().is_some_and(|request| is_same_upload(request, &destination.target_name, &row.match_id)) {
                                                             "Uploading"
-                                                        } else if is_failed_upload(&failed_uploads, &destination.target_name, &row.match_id) {
+                                                        } else if failed_upload(&failed_uploads, &destination.target_name, &row.match_id).is_some() {
                                                             "Retry"
                                                         } else {
                                                             "Upload"
@@ -1178,8 +1385,8 @@ fn DesktopTrayBridge(
     onretry: EventHandler<ReplayUploadRequest>,
 ) -> Element {
     use dioxus::desktop::icon_from_memory;
-    use dioxus::desktop::trayicon::{DioxusTrayIcon, TrayIconBuilder};
-    use dioxus::desktop::use_tray_menu_event_handler;
+    use dioxus::desktop::trayicon::{DioxusTrayIcon, MouseButton, TrayIconBuilder, TrayIconEvent};
+    use dioxus::desktop::{use_tray_icon_event_handler, use_tray_menu_event_handler};
     use dioxus::desktop::{window, WindowCloseBehaviour};
 
     let tray_icon = use_hook({
@@ -1216,6 +1423,17 @@ fn DesktopTrayBridge(
     });
 
     let tray_available = tray_icon.is_some();
+    use_hook(move || {
+        if start_in_tray && tray_available {
+            eprintln!("Initial rlru desktop window created; hiding it to tray after realization");
+            let win = window().window.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                win.set_visible(false);
+            });
+        }
+    });
+
     use_effect(use_reactive!(|tray_available| {
         let behaviour = if tray_available {
             WindowCloseBehaviour::WindowHides
@@ -1251,11 +1469,7 @@ fn DesktopTrayBridge(
         "rlru-hide-window" => window().set_visible(false),
         "rlru-sync-now" => onsync.call(()),
         "rlru-refresh-history" => onrefreshhistory.call(()),
-        "rlru-quit" => {
-            let win = window();
-            win.set_close_behavior(WindowCloseBehaviour::WindowCloses);
-            win.close();
-        }
+        "rlru-quit" => quit_application(),
         id => {
             if let Some(request) = failed_uploads
                 .iter()
@@ -1264,6 +1478,18 @@ fn DesktopTrayBridge(
                 onretry.call(request.clone());
             }
         }
+    });
+
+    use_tray_icon_event_handler(move |event| match event {
+        TrayIconEvent::Click {
+            button: MouseButton::Left,
+            ..
+        }
+        | TrayIconEvent::DoubleClick {
+            button: MouseButton::Left,
+            ..
+        } => show_window(),
+        _ => {}
     });
 
     rsx! {}
@@ -1321,9 +1547,14 @@ fn build_tray_menu(
             let retry = MenuItem::with_id(
                 tray_retry_menu_id(request),
                 format!(
-                    "Retry {} to {}",
+                    "Retry {} to {}{}",
                     short_match_id(&request.match_id),
-                    request.target_name
+                    request.target_name,
+                    request
+                        .reason
+                        .as_ref()
+                        .map(|reason| format!(" - {reason}"))
+                        .unwrap_or_default()
                 ),
                 true,
                 None,
@@ -1388,12 +1619,10 @@ fn append_history_menu(
                 let _ = row_menu.append(&account);
                 let _ = row_menu.append(&when);
                 for destination in &row.upload_destinations {
-                    let state = if is_failed_upload(
-                        failed_uploads,
-                        &destination.target_name,
-                        &row.match_id,
-                    ) {
-                        "Failed"
+                    let state = if let Some(failure) =
+                        failed_upload(failed_uploads, &destination.target_name, &row.match_id)
+                    {
+                        failure.reason.as_deref().unwrap_or("Failed")
                     } else {
                         destination.state.as_str()
                     };
@@ -1441,8 +1670,23 @@ fn DesktopTrayBridge(
 #[cfg(feature = "desktop")]
 fn show_window() {
     let win = dioxus::desktop::window();
-    win.set_visible(true);
-    win.set_focus();
+    restore_desktop_window_handle(win.window.clone());
+}
+
+#[cfg(feature = "desktop")]
+fn quit_application() {
+    use dioxus::desktop::WindowCloseBehaviour;
+
+    cleanup_desktop_instance_socket();
+
+    let win = dioxus::desktop::window();
+    win.set_close_behavior(WindowCloseBehaviour::WindowCloses);
+    win.close();
+
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::process::exit(0);
+    });
 }
 
 fn short_match_id(match_id: &str) -> &str {
@@ -1461,17 +1705,18 @@ fn now_label() -> String {
     "now".to_string()
 }
 
-fn format_backfill_message(message: String, failed_match_ids: &[String]) -> String {
-    if failed_match_ids.is_empty() {
+fn format_backfill_message(message: String, failed_uploads: &[ReplayUploadRequest]) -> String {
+    if failed_uploads.is_empty() {
         message
     } else {
+        let suffix = if failed_uploads.len() == 1 {
+            String::new()
+        } else {
+            format!("; {} total blocked/failed uploads", failed_uploads.len())
+        };
         format!(
-            "{message}; failed matches: {}",
-            failed_match_ids
-                .iter()
-                .map(|match_id| short_match_id(match_id))
-                .collect::<Vec<_>>()
-                .join(", ")
+            "{message}; first issue: {}{suffix}",
+            format_failed_upload(&failed_uploads[0])
         )
     }
 }
@@ -1479,21 +1724,63 @@ fn format_backfill_message(message: String, failed_match_ids: &[String]) -> Stri
 fn dedupe_upload_requests(requests: Vec<ReplayUploadRequest>) -> Vec<ReplayUploadRequest> {
     let mut deduped = Vec::new();
     for request in requests {
-        if !deduped.contains(&request) {
-            deduped.push(request);
-        }
+        upsert_failed_upload(&mut deduped, request);
     }
     deduped
 }
 
-fn is_failed_upload(
+fn upsert_failed_upload(
+    failed_uploads: &mut Vec<ReplayUploadRequest>,
+    request: ReplayUploadRequest,
+) {
+    if let Some(existing) = failed_uploads
+        .iter_mut()
+        .find(|failure| is_same_upload_request(failure, &request))
+    {
+        *existing = request;
+    } else {
+        failed_uploads.push(request);
+    }
+}
+
+fn is_same_upload_request(left: &ReplayUploadRequest, right: &ReplayUploadRequest) -> bool {
+    is_same_upload(left, &right.target_name, &right.match_id)
+}
+
+fn is_same_upload(request: &ReplayUploadRequest, target_name: &str, match_id: &str) -> bool {
+    request.target_name == target_name && request.match_id == match_id
+}
+
+fn failed_upload<'a>(
+    failed_uploads: &'a [ReplayUploadRequest],
+    target_name: &str,
+    match_id: &str,
+) -> Option<&'a ReplayUploadRequest> {
+    failed_uploads
+        .iter()
+        .find(|failure| is_same_upload(failure, target_name, match_id))
+}
+
+fn upload_failure_reason(
     failed_uploads: &[ReplayUploadRequest],
     target_name: &str,
     match_id: &str,
-) -> bool {
-    failed_uploads
-        .iter()
-        .any(|failure| failure.target_name == target_name && failure.match_id == match_id)
+) -> String {
+    failed_upload(failed_uploads, target_name, match_id)
+        .and_then(|failure| failure.reason.clone())
+        .unwrap_or_default()
+}
+
+fn format_failed_upload(failure: &ReplayUploadRequest) -> String {
+    let base = format!(
+        "{} to {}",
+        short_match_id(&failure.match_id),
+        failure.target_name
+    );
+    match &failure.reason {
+        Some(reason) => format!("{base}: {reason}"),
+        None => base,
+    }
 }
 
 #[cfg(all(
@@ -1670,6 +1957,7 @@ async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
             .map(|failed| ReplayUploadRequest {
                 target_name: failed.target_name,
                 match_id: failed.match_id,
+                reason: Some(failed.reason),
             })
             .collect(),
     })
@@ -1711,6 +1999,7 @@ async fn upload_history_replay(request: ReplayUploadRequest) -> Result<BackfillS
             .map(|failed| ReplayUploadRequest {
                 target_name: failed.target_name,
                 match_id: failed.match_id,
+                reason: Some(failed.reason),
             })
             .collect(),
     })
@@ -1750,7 +2039,7 @@ fn load_summary() -> AppSummary {
                         primary: target.primary,
                         predefined: target.predefined,
                         upload_enabled: target.replay_upload.enabled,
-                        auth: auth_label(&target.auth).to_string(),
+                        auth: auth_label(&target.auth),
                         selected: selected_upload_destination.as_ref() == Some(&target.name),
                     })
                     .collect(),
@@ -1804,12 +2093,22 @@ fn platform_label(platform: &rlru::config::PlayerPlatform) -> &'static str {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn auth_label(auth: &rlru::config::TargetAuth) -> &'static str {
+fn auth_label(auth: &rlru::config::TargetAuth) -> String {
     match auth {
-        rlru::config::TargetAuth::None => "No auth",
-        rlru::config::TargetAuth::AuthorizationHeader { .. } => "Authorization header",
-        rlru::config::TargetAuth::Bearer { .. } => "Bearer token",
-        rlru::config::TargetAuth::BearerEnv { .. } => "Bearer env token",
+        rlru::config::TargetAuth::None => "No auth".to_string(),
+        rlru::config::TargetAuth::AuthorizationHeader { .. } => "Authorization header".to_string(),
+        rlru::config::TargetAuth::Bearer { .. } => "Bearer token".to_string(),
+        rlru::config::TargetAuth::BearerEnv { variable } => {
+            if std::env::var_os(variable).is_some() {
+                format!("Bearer env token ({variable})")
+            } else {
+                format!("Bearer env token missing ({variable})")
+            }
+        }
+        rlru::config::TargetAuth::BearerCommand { command } => command
+            .first()
+            .map(|program| format!("Bearer command token ({program})"))
+            .unwrap_or_else(|| "Bearer command token missing command".to_string()),
     }
 }
 

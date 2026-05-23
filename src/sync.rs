@@ -30,6 +30,7 @@ pub struct SyncSummary {
 pub struct FailedUpload {
     pub target_name: String,
     pub match_id: String,
+    pub reason: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -302,6 +303,34 @@ impl SyncService {
                 self.config.accounts.len(),
             )?;
 
+            if let Err(error) = target.auth.header_value() {
+                let reason = error.to_string();
+                for replay in &matches {
+                    let match_id = &replay.match_info.match_guid;
+                    if !requested_match_ids.is_empty()
+                        && !requested_match_ids.contains(&normalize_match_id(match_id))
+                    {
+                        continue;
+                    }
+                    if !options.force && cache.contains(match_id) {
+                        summary.cached += 1;
+                        continue;
+                    }
+                    record_failed_upload(
+                        &mut summary,
+                        &target.name,
+                        match_id,
+                        upload_auth_unavailable_reason(&target.name, &reason),
+                    );
+                }
+                tracing::warn!(
+                    %reason,
+                    target = %target.name,
+                    "skipping replay uploads because upload auth is unavailable"
+                );
+                continue;
+            }
+
             for replay in &matches {
                 let match_id = &replay.match_info.match_guid;
                 if !requested_match_ids.is_empty()
@@ -317,12 +346,12 @@ impl SyncService {
                 let replay_path = match self.download_replay(replay).await {
                     Ok(path) => path,
                     Err(error) => {
-                        summary.failed += 1;
-                        summary.failed_match_ids.push(match_id.clone());
-                        summary.failed_uploads.push(FailedUpload {
-                            target_name: target.name.clone(),
-                            match_id: match_id.clone(),
-                        });
+                        record_failed_upload(
+                            &mut summary,
+                            &target.name,
+                            match_id,
+                            format!("download failed: {}", error_chain(&error)),
+                        );
                         tracing::warn!(%error, match_id, "failed to download replay");
                         continue;
                     }
@@ -347,12 +376,12 @@ impl SyncService {
                         summary.skipped += 1;
                     }
                     Err(error) => {
-                        summary.failed += 1;
-                        summary.failed_match_ids.push(match_id.clone());
-                        summary.failed_uploads.push(FailedUpload {
-                            target_name: target.name.clone(),
-                            match_id: match_id.clone(),
-                        });
+                        record_failed_upload(
+                            &mut summary,
+                            &target.name,
+                            match_id,
+                            format!("upload failed: {}", error_chain(&error)),
+                        );
                         tracing::warn!(
                             %error,
                             match_id,
@@ -432,6 +461,35 @@ impl SyncService {
         })?;
         Ok(final_path)
     }
+}
+
+fn record_failed_upload(
+    summary: &mut SyncSummary,
+    target_name: &str,
+    match_id: &str,
+    reason: String,
+) {
+    summary.failed += 1;
+    summary.failed_match_ids.push(match_id.to_string());
+    summary.failed_uploads.push(FailedUpload {
+        target_name: target_name.to_string(),
+        match_id: match_id.to_string(),
+        reason,
+    });
+}
+
+fn upload_auth_unavailable_reason(target_name: &str, reason: &str) -> String {
+    format!(
+        "{target_name} upload auth is unavailable: {reason}. Set the configured token source before uploading."
+    )
+}
+
+fn error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
 }
 
 #[derive(Debug)]

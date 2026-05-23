@@ -348,4 +348,10 @@ fn print_sync_summary(summary: &rlru::sync::SyncSummary) {
     if !summary.failed_match_ids.is_empty() {
         println!("failed_match_ids: {}", summary.failed_match_ids.join(","));
     }
+    for failure in &summary.failed_uploads {
+        println!(
+            "failed_upload: {} {}: {}",
+            failure.target_name, failure.match_id, failure.reason
+        );
+    }
 }

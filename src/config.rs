@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -322,6 +323,9 @@ pub enum TargetAuth {
     BearerEnv {
         variable: String,
     },
+    BearerCommand {
+        command: Vec<String>,
+    },
 }
 
 impl TargetAuth {
@@ -343,6 +347,7 @@ impl TargetAuth {
             Self::BearerEnv { variable } => {
                 validate_env_var_name("bearer token environment variable", variable)
             }
+            Self::BearerCommand { command } => validate_token_command(command),
         }
     }
 
@@ -354,13 +359,60 @@ impl TargetAuth {
             Self::BearerEnv { variable } => {
                 let token = std::env::var(variable)
                     .with_context(|| format!("{variable} must be set for bearer auth"))?;
-                if token.trim().is_empty() {
-                    bail!("{variable} cannot be empty");
-                }
-                Ok(Some(format!("Bearer {token}")))
+                bearer_header(token, variable)
             }
+            Self::BearerCommand { command } => bearer_command_header(command),
         }
     }
+}
+
+fn bearer_header(token: impl AsRef<str>, source: &str) -> Result<Option<String>> {
+    let token = token.as_ref().trim();
+    if token.is_empty() {
+        bail!("{source} did not provide a bearer token");
+    }
+    Ok(Some(format!("Bearer {token}")))
+}
+
+fn validate_token_command(command: &[String]) -> Result<()> {
+    if command.is_empty() {
+        bail!("bearer token command cannot be empty");
+    }
+    for part in command {
+        if part.trim().is_empty() {
+            bail!("bearer token command cannot contain empty arguments");
+        }
+    }
+    Ok(())
+}
+
+fn bearer_command_header(command: &[String]) -> Result<Option<String>> {
+    validate_token_command(command)?;
+    let (program, args) = command.split_first().expect("validated non-empty command");
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run bearer token command {program:?}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        if stderr.is_empty() {
+            bail!(
+                "bearer token command {program:?} failed with {}",
+                output.status
+            );
+        } else {
+            bail!(
+                "bearer token command {program:?} failed with {}: {stderr}",
+                output.status
+            );
+        }
+    }
+
+    let token = String::from_utf8(output.stdout)
+        .with_context(|| format!("bearer token command {program:?} did not output UTF-8"))?;
+    bearer_header(token, "bearer token command")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -517,6 +569,31 @@ mod tests {
         let parsed: Config = toml::from_str(&legacy_toml).unwrap();
 
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn bearer_command_reads_token_from_stdout() {
+        let auth = TargetAuth::BearerCommand {
+            command: vec!["printf".to_string(), "token-from-command\n".to_string()],
+        };
+
+        assert_eq!(
+            auth.header_value().unwrap(),
+            Some("Bearer token-from-command".to_string())
+        );
+    }
+
+    #[test]
+    fn bearer_command_rejects_empty_stdout() {
+        let auth = TargetAuth::BearerCommand {
+            command: vec!["true".to_string()],
+        };
+
+        assert!(auth
+            .header_value()
+            .unwrap_err()
+            .to_string()
+            .contains("did not provide a bearer token"));
     }
 
     #[test]

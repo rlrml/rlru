@@ -47,4 +47,11 @@ Tokens are stored separately from TOML config under the XDG config directory.
 
 The default upload destinations include Rocky, Ballchasing, and Rocket Sense at
 `https://rocket-sense.duckdns.org/api/v1`. For Rocket Sense uploads, set
-`ROCKET_SENSE_TOKEN` to a Rocket Sense bearer token before running `rlru sync`.
+`ROCKET_SENSE_TOKEN` to a Rocket Sense bearer token before running `rlru sync`,
+or configure a command that prints the token to stdout:
+
+```toml
+[storage.auth]
+kind = "bearer_command"
+command = ["pass", "show", "rocket-sense/token"]
+```
