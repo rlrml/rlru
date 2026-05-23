@@ -9,21 +9,25 @@ pub const APP_ID: &str = "rlru";
 pub struct AppPaths {
     pub config_dir: PathBuf,
     pub cache_dir: PathBuf,
+    pub data_dir: PathBuf,
 }
 
 impl AppPaths {
     pub fn discover() -> Result<Self> {
         let config_base = dirs::config_dir().context("failed to find the user config directory")?;
         let cache_base = dirs::cache_dir().context("failed to find the user cache directory")?;
+        let data_base = dirs::data_dir().context("failed to find the user data directory")?;
         Ok(Self {
             config_dir: config_base.join(APP_ID),
             cache_dir: cache_base.join(APP_ID),
+            data_dir: data_base.join(APP_ID),
         })
     }
 
     pub fn ensure(&self) -> Result<()> {
         create_private_dir(&self.config_dir)?;
         create_private_dir(&self.cache_dir)?;
+        create_private_dir(&self.data_dir)?;
         create_private_dir(&self.tokens_dir())?;
         Ok(())
     }
@@ -41,6 +45,10 @@ impl AppPaths {
             "uploaded-{}.txt",
             sanitize_path_segment(target_name)
         ))
+    }
+
+    pub fn sync_state_file(&self) -> PathBuf {
+        self.data_dir.join("sync-state.toml")
     }
 }
 
