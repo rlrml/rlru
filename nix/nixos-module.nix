@@ -5,25 +5,15 @@ self: {
   ...
 }: let
   cfg = config.services.rlru;
-  configArgs = lib.optionals (cfg.configFile != null) [
-    "--config"
-    (toString cfg.configFile)
-  ];
 in {
   options.services.rlru = {
     enable = lib.mkEnableOption "rlru, a Rocket League replay uploader";
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.rlru;
-      defaultText = lib.literalExpression "inputs.rlru.packages.\${pkgs.stdenv.hostPlatform.system}.rlru";
-      description = "The rlru package to run.";
-    };
-
-    configFile = lib.mkOption {
-      type = lib.types.nullOr (lib.types.either lib.types.path lib.types.str);
-      default = null;
-      description = "Optional rlru TOML config file path.";
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.rlru-dioxus-desktop;
+      defaultText = lib.literalExpression "inputs.rlru.packages.\${pkgs.stdenv.hostPlatform.system}.rlru-dioxus-desktop";
+      description = "The rlru desktop package to run.";
     };
 
     environment = lib.mkOption {
@@ -48,16 +38,7 @@ in {
       };
 
       serviceConfig = {
-        ExecStart = lib.escapeShellArgs (
-          [
-            (lib.getExe cfg.package)
-          ]
-          ++ configArgs
-          ++ [
-            "sync"
-            "daemon"
-          ]
-        );
+        ExecStart = lib.getExe cfg.package;
         Environment = lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
         Restart = "on-failure";
         RestartSec = "5s";

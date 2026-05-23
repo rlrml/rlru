@@ -110,10 +110,13 @@
           buildNoDefaultFeatures ? false,
           extraBuildInputs ? [],
           extraNativeBuildInputs ? [],
+          desktopItems ? [],
+          postInstall ? "",
           postFixup ? "",
         }:
           rustPlatform.buildRustPackage {
             inherit pname buildFeatures buildNoDefaultFeatures;
+            inherit desktopItems postInstall;
             version = "0.1.0";
             src = cleanSrc;
             cargoLock.lockFile = ./Cargo.lock;
@@ -217,7 +220,30 @@
               buildNoDefaultFeatures = true;
               buildFeatures = ["desktop"];
               extraBuildInputs = dioxusLinuxBuildInputs ++ dioxusDarwinBuildInputs ++ [pkgs.openssl];
-              extraNativeBuildInputs = lib.optionals isLinux [pkgs.makeWrapper];
+              extraNativeBuildInputs = lib.optionals isLinux [
+                pkgs.copyDesktopItems
+                pkgs.makeWrapper
+              ];
+              desktopItems = lib.optionals isLinux [
+                (pkgs.makeDesktopItem {
+                  name = "org.colonelpanic.rlru.dioxus";
+                  desktopName = "rlru";
+                  genericName = "Rocket League replay uploader";
+                  comment = "Upload Rocket League replay data";
+                  exec = "rlru-dioxus";
+                  icon = "org.colonelpanic.rlru.dioxus";
+                  terminal = false;
+                  categories = ["Game" "Utility"];
+                  startupNotify = true;
+                })
+              ];
+              postInstall = lib.optionalString isLinux ''
+                for size in 16 24 32 48 64 128 256 512 1024; do
+                  install -Dm644 \
+                    "crates/rlru-dioxus/assets/icons/rlru-icon-$size.png" \
+                    "$out/share/icons/hicolor/''${size}x''${size}/apps/org.colonelpanic.rlru.dioxus.png"
+                done
+              '';
               postFixup = lib.optionalString isLinux ''
                 wrapProgram $out/bin/rlru-dioxus \
                   --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath dioxusLinuxLibraryPathInputs} \
