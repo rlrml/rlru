@@ -412,8 +412,14 @@ fn launch_app() {
 #[component]
 fn App() -> Element {
     let mut summary = use_signal(load_summary);
-    let mut history = use_resource(load_history);
     let mut active_view = use_signal(|| ActiveView::Overview);
+    let mut history = use_resource(move || async move {
+        if active_view() == ActiveView::History {
+            load_history().await
+        } else {
+            Ok(Vec::new())
+        }
+    });
     let mut action_message = use_signal(String::new);
     let mut history_message = use_signal(String::new);
     let mut backfill_running = use_signal(|| false);
