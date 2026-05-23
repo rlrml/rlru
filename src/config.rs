@@ -13,7 +13,8 @@ use url::Url;
 pub struct Config {
     pub behavior: BehaviorConfig,
     pub accounts: Vec<AccountConfig>,
-    pub storage: Vec<StorageConfig>,
+    #[serde(alias = "storage")]
+    pub upload_destinations: Vec<UploadDestinationConfig>,
 }
 
 impl Default for Config {
@@ -21,10 +22,10 @@ impl Default for Config {
         Self {
             behavior: BehaviorConfig::default(),
             accounts: vec![AccountConfig::default()],
-            storage: vec![
-                StorageConfig::rocky(),
-                StorageConfig::ballchasing(),
-                StorageConfig::rocket_sense(),
+            upload_destinations: vec![
+                UploadDestinationConfig::rocky(),
+                UploadDestinationConfig::ballchasing(),
+                UploadDestinationConfig::rocket_sense(),
             ],
         }
     }
@@ -64,8 +65,10 @@ impl Config {
             .with_context(|| format!("failed to write config {}", path.display()))
     }
 
-    pub fn target(&self, name: &str) -> Option<&StorageConfig> {
-        self.storage.iter().find(|target| target.name == name)
+    pub fn upload_destination(&self, name: &str) -> Option<&UploadDestinationConfig> {
+        self.upload_destinations
+            .iter()
+            .find(|target| target.name == name)
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -83,15 +86,15 @@ impl Config {
             }
         }
 
-        if self.storage.is_empty() {
-            bail!("config must define at least one storage target");
+        if self.upload_destinations.is_empty() {
+            bail!("config must define at least one upload destination");
         }
 
         let mut target_names = HashSet::new();
-        for target in &self.storage {
+        for target in &self.upload_destinations {
             target.validate()?;
             if !target_names.insert(target.name.as_str()) {
-                bail!("duplicate storage target {:?}", target.name);
+                bail!("duplicate upload destination {:?}", target.name);
             }
         }
 
@@ -105,9 +108,13 @@ impl Config {
             }
         }
 
-        if let Some(selected) = &self.behavior.selected_storage {
-            if !self.storage.iter().any(|target| &target.name == selected) {
-                bail!("selected storage {selected:?} does not exist");
+        if let Some(selected) = &self.behavior.selected_upload_destination {
+            if !self
+                .upload_destinations
+                .iter()
+                .any(|target| &target.name == selected)
+            {
+                bail!("selected upload destination {selected:?} does not exist");
             }
         }
 
@@ -128,7 +135,8 @@ pub struct BehaviorConfig {
     #[serde(with = "humantime_serde")]
     pub auto_upload_jitter_max: Duration,
     pub selected_account: Option<String>,
-    pub selected_storage: Option<String>,
+    #[serde(alias = "selected_storage")]
+    pub selected_upload_destination: Option<String>,
 }
 
 impl Default for BehaviorConfig {
@@ -142,7 +150,7 @@ impl Default for BehaviorConfig {
             auto_upload_interval: Duration::from_secs(45 * 60),
             auto_upload_jitter_max: Duration::from_secs(15 * 60),
             selected_account: None,
-            selected_storage: None,
+            selected_upload_destination: None,
         }
     }
 }
@@ -189,7 +197,7 @@ impl AccountConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default, deny_unknown_fields)]
-pub struct StorageConfig {
+pub struct UploadDestinationConfig {
     pub name: String,
     pub url: Url,
     pub predefined: bool,
@@ -200,7 +208,7 @@ pub struct StorageConfig {
     pub replay_upload: ReplayUploadConfig,
 }
 
-impl StorageConfig {
+impl UploadDestinationConfig {
     pub fn rocky() -> Self {
         Self {
             name: "Rocky".to_string(),
@@ -265,13 +273,13 @@ impl StorageConfig {
                 path: "/replays".to_string(),
                 file_field: "file".to_string(),
                 success_statuses: vec![201],
-                duplicate_statuses: vec![409],
+                duplicate_statuses: vec![200, 409],
             },
         }
     }
 
     pub fn validate(&self) -> Result<()> {
-        validate_name("storage name", &self.name)?;
+        validate_name("upload destination name", &self.name)?;
         validate_http_url(&self.url)?;
         self.auth.validate()?;
         self.ping.validate()?;
@@ -294,7 +302,7 @@ impl StorageConfig {
     }
 }
 
-impl Default for StorageConfig {
+impl Default for UploadDestinationConfig {
     fn default() -> Self {
         Self::rocky()
     }
@@ -437,7 +445,7 @@ fn validate_env_var_name(label: &str, value: &str) -> Result<()> {
 fn validate_http_url(url: &Url) -> Result<()> {
     match url.scheme() {
         "http" | "https" => Ok(()),
-        scheme => bail!("storage URL must use http or https, got {scheme:?}"),
+        scheme => bail!("upload destination URL must use http or https, got {scheme:?}"),
     }
 }
 
@@ -486,18 +494,34 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_storage_names() {
+    fn rejects_duplicate_upload_destination_names() {
         let mut config = Config::default();
-        config.storage.push(StorageConfig::rocky());
+        config
+            .upload_destinations
+            .push(UploadDestinationConfig::rocky());
 
         let err = config.validate().unwrap_err();
 
-        assert!(err.to_string().contains("duplicate storage target"));
+        assert!(err.to_string().contains("duplicate upload destination"));
+    }
+
+    #[test]
+    fn accepts_legacy_storage_field_names() {
+        let mut config = Config::default();
+        config.behavior.selected_upload_destination = Some("Rocket Sense".to_string());
+        let toml = config.to_pretty_toml().unwrap();
+        let legacy_toml = toml
+            .replace("selected_upload_destination", "selected_storage")
+            .replace("upload_destinations", "storage");
+
+        let parsed: Config = toml::from_str(&legacy_toml).unwrap();
+
+        assert_eq!(parsed, config);
     }
 
     #[test]
     fn endpoint_url_keeps_base_path_and_query() {
-        let target = StorageConfig::ballchasing();
+        let target = UploadDestinationConfig::ballchasing();
 
         let url = target.endpoint_url(&target.replay_upload.path).unwrap();
 
@@ -509,7 +533,7 @@ mod tests {
 
     #[test]
     fn rocket_sense_defaults_to_local_api_upload() {
-        let target = StorageConfig::rocket_sense();
+        let target = UploadDestinationConfig::rocket_sense();
 
         assert_eq!(
             target
@@ -528,5 +552,6 @@ mod tests {
                 variable: "ROCKET_SENSE_TOKEN".to_string()
             }
         );
+        assert_eq!(target.replay_upload.duplicate_statuses, vec![200, 409]);
     }
 }

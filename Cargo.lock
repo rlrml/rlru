@@ -4585,6 +4585,7 @@ dependencies = [
 name = "rlru-dioxus"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dioxus",
  "rlru",
  "serde",

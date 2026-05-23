@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
@@ -21,6 +22,14 @@ pub struct SyncSummary {
     pub cached: usize,
     pub skipped: usize,
     pub failed: usize,
+    pub failed_match_ids: Vec<String>,
+    pub failed_uploads: Vec<FailedUpload>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedUpload {
+    pub target_name: String,
+    pub match_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -28,6 +37,7 @@ pub struct SyncOptions {
     pub include_online: bool,
     pub target_name: Option<String>,
     pub force: bool,
+    pub match_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +58,7 @@ pub struct HistoryUploadState {
     pub target_name: String,
     pub upload_enabled: bool,
     pub cached: bool,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,7 +127,7 @@ impl SyncService {
     }
 
     pub async fn current_history(&self, target_name: Option<&str>) -> Result<Vec<HistoryEntry>> {
-        let targets = self.upload_targets(target_name)?;
+        let targets = self.upload_destinations(target_name)?;
         let caches = targets
             .iter()
             .map(|target| {
@@ -166,6 +177,7 @@ impl SyncService {
                             target_name: target.name.clone(),
                             upload_enabled: target.replay_upload.enabled,
                             cached: cache.contains(&match_id),
+                            location: cache.location(&match_id).map(ToOwned::to_owned),
                         })
                         .collect(),
                 }
@@ -274,13 +286,14 @@ impl SyncService {
         options: &SyncOptions,
     ) -> Result<SyncSummary> {
         let mut summary = SyncSummary {
-            matches_seen: matches.len(),
+            matches_seen: selected_match_count(&matches, &options.match_ids),
             ..SyncSummary::default()
         };
+        let requested_match_ids = normalized_match_ids(&options.match_ids);
 
-        for target in self.upload_targets(options.target_name.as_deref())? {
+        for target in self.upload_destinations(options.target_name.as_deref())? {
             if !target.replay_upload.enabled {
-                summary.skipped += matches.len();
+                summary.skipped += summary.matches_seen;
                 continue;
             }
 
@@ -291,6 +304,11 @@ impl SyncService {
 
             for replay in &matches {
                 let match_id = &replay.match_info.match_guid;
+                if !requested_match_ids.is_empty()
+                    && !requested_match_ids.contains(&normalize_match_id(match_id))
+                {
+                    continue;
+                }
                 if !options.force && cache.contains(match_id) {
                     summary.cached += 1;
                     continue;
@@ -300,28 +318,41 @@ impl SyncService {
                     Ok(path) => path,
                     Err(error) => {
                         summary.failed += 1;
+                        summary.failed_match_ids.push(match_id.clone());
+                        summary.failed_uploads.push(FailedUpload {
+                            target_name: target.name.clone(),
+                            match_id: match_id.clone(),
+                        });
                         tracing::warn!(%error, match_id, "failed to download replay");
                         continue;
                     }
                 };
 
-                let outcome = self.uploader.upload_replay(target, &replay_path).await;
+                let result = self
+                    .uploader
+                    .upload_replay_with_match_id(target, &replay_path, Some(match_id))
+                    .await;
                 let _ = fs::remove_file(&replay_path).await;
 
-                match outcome {
-                    Ok(UploadOutcome::Uploaded) => {
+                match result {
+                    Ok(result) if result.outcome == UploadOutcome::Uploaded => {
                         summary.uploaded += 1;
-                        cache.add(match_id.clone())?;
+                        cache.add_with_location(match_id.clone(), result.location)?;
                     }
-                    Ok(UploadOutcome::Duplicate) => {
+                    Ok(result) if result.outcome == UploadOutcome::Duplicate => {
                         summary.duplicates += 1;
-                        cache.add(match_id.clone())?;
+                        cache.add_with_location(match_id.clone(), result.location)?;
                     }
-                    Ok(UploadOutcome::Skipped) => {
+                    Ok(_) => {
                         summary.skipped += 1;
                     }
                     Err(error) => {
                         summary.failed += 1;
+                        summary.failed_match_ids.push(match_id.clone());
+                        summary.failed_uploads.push(FailedUpload {
+                            target_name: target.name.clone(),
+                            match_id: match_id.clone(),
+                        });
                         tracing::warn!(
                             %error,
                             match_id,
@@ -336,21 +367,21 @@ impl SyncService {
         Ok(summary)
     }
 
-    fn upload_targets(
+    fn upload_destinations(
         &self,
         target_name: Option<&str>,
-    ) -> Result<Vec<&crate::config::StorageConfig>> {
+    ) -> Result<Vec<&crate::config::UploadDestinationConfig>> {
         match target_name {
             Some(name) => {
                 let target = self
                     .config
-                    .target(name)
-                    .with_context(|| format!("unknown storage target {name:?}"))?;
+                    .upload_destination(name)
+                    .with_context(|| format!("unknown upload destination {name:?}"))?;
                 Ok(vec![target])
             }
             None => Ok(self
                 .config
-                .storage
+                .upload_destinations
                 .iter()
                 .filter(|target| target.replay_upload.enabled)
                 .collect()),
@@ -418,5 +449,31 @@ impl SyncSummary {
         self.cached += other.cached;
         self.skipped += other.skipped;
         self.failed += other.failed;
+        self.failed_match_ids.extend(other.failed_match_ids);
+        self.failed_uploads.extend(other.failed_uploads);
     }
+}
+
+fn selected_match_count(matches: &[MatchEntry], match_ids: &[String]) -> usize {
+    let requested_match_ids = normalized_match_ids(match_ids);
+    if requested_match_ids.is_empty() {
+        return matches.len();
+    }
+    matches
+        .iter()
+        .filter(|replay| {
+            requested_match_ids.contains(&normalize_match_id(&replay.match_info.match_guid))
+        })
+        .count()
+}
+
+fn normalized_match_ids(match_ids: &[String]) -> HashSet<String> {
+    match_ids
+        .iter()
+        .map(|match_id| normalize_match_id(match_id))
+        .collect()
+}
+
+fn normalize_match_id(match_id: &str) -> String {
+    match_id.trim().to_ascii_uppercase()
 }

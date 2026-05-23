@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -89,6 +89,8 @@ enum SyncCommand {
         respect_online_guard: bool,
         #[arg(long)]
         force: bool,
+        #[arg(long = "match-id")]
+        match_ids: Vec<String>,
     },
     Daemon,
 }
@@ -207,8 +209,8 @@ async fn handle_upload_file(
 ) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
     let target = config
-        .target(target_name)
-        .with_context(|| format!("unknown storage target {target_name:?}"))?;
+        .upload_destination(target_name)
+        .with_context(|| format!("unknown upload destination {target_name:?}"))?;
 
     let mut cache =
         UploadCache::load(paths.upload_cache_path(&target.name), config.accounts.len())?;
@@ -220,13 +222,21 @@ async fn handle_upload_file(
     }
 
     let uploader = ReplayUploader::new();
-    let outcome = uploader.upload_replay(target, file_path).await?;
-    if matches!(outcome, UploadOutcome::Uploaded | UploadOutcome::Duplicate) {
+    let result = uploader
+        .upload_replay_with_match_id(target, file_path, match_id.as_deref())
+        .await?;
+    if matches!(
+        result.outcome,
+        UploadOutcome::Uploaded | UploadOutcome::Duplicate
+    ) {
         if let Some(match_id) = match_id {
-            cache.add(match_id)?;
+            cache.add_with_location(match_id, result.location.clone())?;
         }
     }
-    println!("{outcome:?}");
+    println!("{:?}", result.outcome);
+    if let Some(location) = result.location {
+        println!("location: {location}");
+    }
     Ok(())
 }
 
@@ -248,6 +258,7 @@ async fn handle_sync_command(
             all_targets,
             respect_online_guard,
             force,
+            match_ids,
         } => {
             let config = Config::load_or_default(config_path)?;
             let target_name = if all_targets {
@@ -256,7 +267,7 @@ async fn handle_sync_command(
                 Some("Rocket Sense".to_string())
             } else if target.is_some() {
                 target
-            } else if config.target("Rocket Sense").is_some() {
+            } else if config.upload_destination("Rocket Sense").is_some() {
                 Some("Rocket Sense".to_string())
             } else {
                 None
@@ -266,6 +277,7 @@ async fn handle_sync_command(
                     include_online: !respect_online_guard,
                     target_name,
                     force,
+                    match_ids,
                 })
                 .await?;
             print_sync_summary(&summary);
@@ -277,30 +289,51 @@ async fn handle_sync_command(
 
 async fn run_sync_daemon(paths: AppPaths, config_path: &Path) -> Result<()> {
     let config = Config::load_or_default(config_path)?;
-    let interval = config.behavior.auto_upload_interval;
-    let upload_on_launch = config.behavior.upload_on_launch;
-    let service = SyncService::new(paths, config);
-
-    if upload_on_launch {
-        match service.run_once().await {
-            Ok(summary) => print_sync_summary(&summary),
-            Err(error) => tracing::warn!(%error, "sync cycle failed"),
-        }
+    if config.behavior.upload_on_launch {
+        run_daemon_sync_cycle(&paths, config).await;
     }
 
     loop {
+        let config = Config::load_or_default(config_path)?;
+        let interval = daemon_sleep_duration(&config.behavior);
+
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 println!("stopping");
                 return Ok(());
             }
-            _ = tokio::time::sleep(interval.max(Duration::from_secs(60))) => {
-                match service.run_once().await {
-                    Ok(summary) => print_sync_summary(&summary),
-                    Err(error) => tracing::warn!(%error, "sync cycle failed"),
+            _ = tokio::time::sleep(interval) => {
+                let config = Config::load_or_default(config_path)?;
+                if config.behavior.auto_upload {
+                    run_daemon_sync_cycle(&paths, config).await;
                 }
             }
         }
+    }
+}
+
+fn daemon_sleep_duration(behavior: &rlru::config::BehaviorConfig) -> Duration {
+    behavior.auto_upload_interval.max(Duration::from_secs(60))
+        + jitter_duration(behavior.auto_upload_jitter_max)
+}
+
+fn jitter_duration(max: Duration) -> Duration {
+    let max_secs = max.as_secs();
+    if max_secs == 0 {
+        return Duration::ZERO;
+    }
+
+    let seed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    Duration::from_secs((seed % (u128::from(max_secs) + 1)) as u64)
+}
+
+async fn run_daemon_sync_cycle(paths: &AppPaths, config: Config) {
+    match SyncService::new(paths.clone(), config).run_once().await {
+        Ok(summary) => print_sync_summary(&summary),
+        Err(error) => tracing::warn!(%error, "sync cycle failed"),
     }
 }
 
@@ -312,4 +345,7 @@ fn print_sync_summary(summary: &rlru::sync::SyncSummary) {
     println!("cached: {}", summary.cached);
     println!("skipped: {}", summary.skipped);
     println!("failed: {}", summary.failed);
+    if !summary.failed_match_ids.is_empty() {
+        println!("failed_match_ids: {}", summary.failed_match_ids.join(","));
+    }
 }
