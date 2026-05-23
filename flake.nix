@@ -110,30 +110,34 @@
           buildNoDefaultFeatures ? false,
           extraBuildInputs ? [],
           extraNativeBuildInputs ? [],
+          extraRustFlags ? [],
           desktopItems ? [],
           postInstall ? "",
           postFixup ? "",
         }:
-          rustPlatform.buildRustPackage {
-            inherit pname buildFeatures buildNoDefaultFeatures;
-            inherit desktopItems postInstall;
-            version = "0.1.0";
-            src = cleanSrc;
-            cargoLock.lockFile = ./Cargo.lock;
-            cargoBuildFlags = ["-p" cargoPackage];
-            cargoTestFlags = ["-p" cargoPackage];
-            nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
-            buildInputs = extraBuildInputs;
-            RUST_MIN_STACK = "16777216";
-            inherit postFixup;
-            meta = {
-              description = "Rocket League replay uploader";
-              homepage = "https://github.com/rlrml/rlru";
-              license = with lib.licenses; [mit asl20];
-              mainProgram = pname;
-              platforms = lib.platforms.unix ++ lib.platforms.windows;
-            };
-          };
+          rustPlatform.buildRustPackage ({
+              inherit pname buildFeatures buildNoDefaultFeatures;
+              inherit desktopItems postInstall;
+              version = "0.1.0";
+              src = cleanSrc;
+              cargoLock.lockFile = ./Cargo.lock;
+              cargoBuildFlags = ["-p" cargoPackage];
+              cargoTestFlags = ["-p" cargoPackage];
+              nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
+              buildInputs = extraBuildInputs;
+              RUST_MIN_STACK = "67108864";
+              inherit postFixup;
+              meta = {
+                description = "Rocket League replay uploader";
+                homepage = "https://github.com/rlrml/rlru";
+                license = with lib.licenses; [mit asl20];
+                mainProgram = pname;
+                platforms = lib.platforms.unix ++ lib.platforms.windows;
+              };
+            }
+            // lib.optionalAttrs (extraRustFlags != []) {
+              RUSTFLAGS = lib.concatStringsSep " " extraRustFlags;
+            });
         rlruLinuxStaticCli = rustPlatform.buildRustPackage {
           pname = "rlru";
           version = "0.1.0";
@@ -224,6 +228,10 @@
               extraNativeBuildInputs = lib.optionals isLinux [
                 pkgs.copyDesktopItems
                 pkgs.makeWrapper
+              ];
+              extraRustFlags = lib.optionals isLinux [
+                "-C"
+                "link-arg=-fuse-ld=bfd"
               ];
               desktopItems = lib.optionals isLinux [
                 (pkgs.makeDesktopItem {
