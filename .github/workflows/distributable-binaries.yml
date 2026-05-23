@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   linux:
-    name: Linux x86_64
+    name: Linux CLI x86_64
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -26,26 +26,26 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Linux distribution archive
+      - name: Build Linux CLI archive
         run: |
-          nix build .#dist-linux-x86_64 --out-link result-linux
+          nix build .#dist-cli-linux-x86_64 --out-link result-linux-cli
 
       - name: Stage Linux artifact
         run: |
           set -euo pipefail
 
           mkdir -p dist
-          cp -L result-linux dist/rlru-linux-x86_64.tar.gz
+          cp -L result-linux-cli dist/rlru-cli-linux-x86_64.tar.gz
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rlru-linux-x86_64
-          path: dist/rlru-linux-x86_64.tar.gz
+          name: rlru-cli-linux-x86_64
+          path: dist/rlru-cli-linux-x86_64.tar.gz
           if-no-files-found: error
 
   windows:
-    name: Windows x86_64
+    name: Windows CLI x86_64
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -57,20 +57,62 @@ jobs:
           extra_nix_config: |
             experimental-features = nix-command flakes
 
-      - name: Build Windows distribution archive
+      - name: Build Windows CLI archive
         run: |
-          nix build .#dist-windows-x86_64 --out-link result-windows
+          nix build .#dist-cli-windows-x86_64 --out-link result-windows-cli
 
       - name: Stage Windows artifact
         run: |
           set -euo pipefail
 
           mkdir -p dist
-          cp -L result-windows dist/rlru-windows-x86_64.zip
+          cp -L result-windows-cli dist/rlru-cli-windows-x86_64.zip
 
       - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rlru-windows-x86_64
-          path: dist/rlru-windows-x86_64.zip
+          name: rlru-cli-windows-x86_64
+          path: dist/rlru-cli-windows-x86_64.zip
+          if-no-files-found: error
+
+  linux-appimage:
+    name: Linux Desktop AppImage x86_64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Linux desktop AppImage
+        run: |
+          nix build .#rlru-dioxus-appimage --out-link result-appimage
+
+      - name: Stage AppImage artifact
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          if [[ -d result-appimage ]]; then
+            appimage="$(find result-appimage -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+            if [[ -z "$appimage" ]]; then
+              echo "no AppImage file found in result-appimage" >&2
+              find result-appimage -maxdepth 2 -type f -print >&2
+              exit 1
+            fi
+            cp -L "$appimage" dist/rlru-dioxus-linux-x86_64.AppImage
+          else
+            cp -L result-appimage dist/rlru-dioxus-linux-x86_64.AppImage
+          fi
+          chmod +x dist/rlru-dioxus-linux-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlru-dioxus-linux-x86_64-appimage
+          path: dist/rlru-dioxus-linux-x86_64.AppImage
           if-no-files-found: error
