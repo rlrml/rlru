@@ -1312,6 +1312,58 @@ fn ActivityView(summary: AppSummary, onautoupload: EventHandler<bool>) -> Elemen
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
+#[derive(Clone, Debug)]
+enum TrayCommand {
+    ShowWindow,
+    ToggleWindow,
+    SyncNow,
+    RefreshHistory,
+    Retry(ReplayUploadRequest),
+    Quit,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+struct TrayState {
+    sender: std::sync::mpsc::Sender<TrayThreadMessage>,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+impl Drop for TrayState {
+    fn drop(&mut self) {
+        let _ = self.sender.send(TrayThreadMessage::Shutdown);
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+enum TrayThreadMessage {
+    Update(Box<TrayUpdate>),
+    Shutdown,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+struct TrayUpdate {
+    summary: AppSummary,
+    history: Option<Result<Vec<HistoryRow>, String>>,
+    sync_run: SyncRunState,
+    failed_uploads: Vec<ReplayUploadRequest>,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
 #[component]
 fn DesktopTrayBridge(
     summary: AppSummary,
@@ -1322,135 +1374,55 @@ fn DesktopTrayBridge(
     onrefreshhistory: EventHandler<()>,
     onretry: EventHandler<ReplayUploadRequest>,
 ) -> Element {
-    use dioxus::desktop::icon_from_memory;
-    use dioxus::desktop::tao::event::{Event, WindowEvent};
-    use dioxus::desktop::trayicon::{DioxusTrayIcon, MouseButton, TrayIconBuilder, TrayIconEvent};
-    use dioxus::desktop::{
-        use_tray_icon_event_handler, use_tray_menu_event_handler, use_wry_event_handler,
-    };
-    use dioxus::desktop::{window, WindowCloseBehaviour};
+    use dioxus::desktop::WindowCloseBehaviour;
+    use futures_util::StreamExt;
 
-    let mut window_visible = use_signal_sync(|| true);
-
-    let tray_icon = use_hook({
-        let summary = summary.clone();
-        let history = history.clone();
-        let sync_run = sync_run.clone();
-        let failed_uploads = failed_uploads.clone();
-        let window_is_visible = window_visible();
-        move || {
-            let menu = build_tray_menu(
-                &summary,
-                history.as_ref(),
-                &sync_run,
-                &failed_uploads,
-                window_is_visible,
-            );
-            let mut builder = TrayIconBuilder::new()
-                .with_id("rlru")
-                .with_menu(Box::new(menu))
-                .with_menu_on_left_click(false)
-                .with_title("rlru")
-                .with_tooltip(tray_tooltip(&summary, &sync_run, failed_uploads.len()));
-
-            match icon_from_memory::<DioxusTrayIcon>(APP_ICON_PNG) {
-                Ok(icon) => builder = builder.with_icon(icon),
-                Err(error) => eprintln!("Failed to load rlru tray icon: {error}"),
-            }
-
-            match builder.build() {
-                Ok(tray) => Some(tray),
-                Err(error) => {
-                    eprintln!("Failed to initialize rlru tray icon: {error}");
-                    None
+    let mut tray_state = use_signal(|| None);
+    let command_handler = use_coroutine(
+        move |mut receiver: UnboundedReceiver<TrayCommand>| async move {
+            while let Some(command) = receiver.next().await {
+                match command {
+                    TrayCommand::ShowWindow => show_window(),
+                    TrayCommand::ToggleWindow => toggle_window_visibility(),
+                    TrayCommand::SyncNow => {
+                        show_window();
+                        onsync.call(());
+                    }
+                    TrayCommand::RefreshHistory => onrefreshhistory.call(()),
+                    TrayCommand::Retry(request) => onretry.call(request),
+                    TrayCommand::Quit => {
+                        quit_application(tray_state);
+                        return;
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 
-    let tray_available = tray_icon.is_some();
-
-    use_wry_event_handler(move |event, _| {
-        if matches!(
-            event,
-            Event::WindowEvent {
-                event: WindowEvent::CloseRequested,
-                ..
-            }
-        ) {
-            window_visible.set(false);
-        }
-    });
-
-    use_effect(use_reactive!(|tray_available| {
-        let behaviour = if tray_available {
+    use_hook(move || {
+        let state = create_tray_state(command_handler.tx());
+        let behaviour = if state.is_some() {
             WindowCloseBehaviour::WindowHides
         } else {
             WindowCloseBehaviour::WindowCloses
         };
-        window().set_close_behavior(behaviour);
-    }));
-
-    let failed_uploads_for_effect = failed_uploads.clone();
-    use_effect(use_reactive!(|(
-        summary,
-        history,
-        sync_run,
-        failed_uploads_for_effect,
-    )| {
-        let window_is_visible = window_visible();
-        if let Some(tray) = tray_icon.as_ref() {
-            let tooltip = tray_tooltip(&summary, &sync_run, failed_uploads_for_effect.len());
-            if let Err(error) = tray.set_tooltip(Some(tooltip)) {
-                eprintln!("Failed to update rlru tray tooltip: {error}");
-            }
-            tray.set_menu(Some(Box::new(build_tray_menu(
-                &summary,
-                history.as_ref(),
-                &sync_run,
-                &failed_uploads_for_effect,
-                window_is_visible,
-            ))));
-        }
-    }));
-
-    use_tray_menu_event_handler(move |event| match event.id().as_ref() {
-        "rlru-toggle-window" => {
-            if window().window.is_visible() {
-                window().set_visible(false);
-                window_visible.set(false);
-            } else {
-                show_window();
-                window_visible.set(true);
-            }
-        }
-        "rlru-sync-now" => onsync.call(()),
-        "rlru-refresh-history" => onrefreshhistory.call(()),
-        "rlru-quit" => quit_application(),
-        id => {
-            if let Some(request) = failed_uploads
-                .iter()
-                .find(|request| tray_retry_menu_id(request) == id)
-            {
-                onretry.call(request.clone());
-            }
-        }
+        dioxus::desktop::window().set_close_behavior(behaviour);
+        tray_state.set(state);
     });
 
-    use_tray_icon_event_handler(move |event| match event {
-        TrayIconEvent::Click {
-            button: MouseButton::Left,
-            ..
+    use_effect(use_reactive!(
+        |summary, history, sync_run, failed_uploads| {
+            if let Some(tray_state) = tray_state.read().as_ref() {
+                update_tray_state(
+                    tray_state,
+                    summary.clone(),
+                    history.clone(),
+                    sync_run.clone(),
+                    failed_uploads.clone(),
+                );
+            }
         }
-        | TrayIconEvent::DoubleClick {
-            button: MouseButton::Left,
-            ..
-        } => {
-            show_window();
-            window_visible.set(true);
-        }
-        _ => {}
-    });
+    ));
 
     rsx! {}
 }
@@ -1459,131 +1431,170 @@ fn DesktopTrayBridge(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
-fn build_tray_menu(
-    summary: &AppSummary,
-    history: Option<&Result<Vec<HistoryRow>, String>>,
-    sync_run: &SyncRunState,
-    failed_uploads: &[ReplayUploadRequest],
-    window_visible: bool,
-) -> dioxus::desktop::trayicon::menu::Menu {
-    use dioxus::desktop::trayicon::menu::{
-        IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
-    };
-
-    let menu = Menu::new();
-    let status = MenuItem::new(tray_sync_label(sync_run), false, None);
-    let cadence = MenuItem::new(
-        format!(
-            "Auto upload: {}, {}",
-            auto_upload_label(summary),
-            summary.interval
-        ),
-        false,
-        None,
-    );
-    let sync_now = MenuItem::with_id("rlru-sync-now", "Sync Now", !sync_run.running, None);
-    let refresh_history = MenuItem::with_id("rlru-refresh-history", "Refresh History", true, None);
-    let separator = PredefinedMenuItem::separator();
-    if let Err(error) = menu.append_items(&[
-        &status as &dyn IsMenuItem,
-        &cadence,
-        &sync_now,
-        &refresh_history,
-        &separator,
-    ]) {
-        eprintln!("Failed to build rlru tray menu: {error}");
-    }
-
-    let history_menu = Submenu::new("History", true);
-    append_history_menu(&history_menu, history, failed_uploads);
-    if let Err(error) = menu.append(&history_menu) {
-        eprintln!("Failed to append rlru tray history menu: {error}");
-    }
-
-    if !failed_uploads.is_empty() {
-        let separator = PredefinedMenuItem::separator();
-        let failures_menu =
-            Submenu::new(format!("Failed Uploads ({})", failed_uploads.len()), true);
-        for request in failed_uploads {
-            let retry = MenuItem::with_id(
-                tray_retry_menu_id(request),
-                format!(
-                    "Retry {} to {}{}",
-                    short_match_id(&request.match_id),
-                    request.target_name,
-                    request
-                        .reason
-                        .as_ref()
-                        .map(|reason| format!(" - {reason}"))
-                        .unwrap_or_default()
-                ),
-                true,
-                None,
-            );
-            if let Err(error) = failures_menu.append(&retry) {
-                eprintln!("Failed to append rlru failed upload menu item: {error}");
-            }
-        }
-        if let Err(error) = menu.append_items(&[&separator, &failures_menu]) {
-            eprintln!("Failed to append rlru failed upload menu: {error}");
+fn create_tray_state(sender: UnboundedSender<TrayCommand>) -> Option<TrayState> {
+    match create_tray_state_inner(sender) {
+        Ok(state) => Some(state),
+        Err(error) => {
+            eprintln!("Failed to initialize rlru tray icon: {error}");
+            None
         }
     }
-
-    let separator = PredefinedMenuItem::separator();
-    let window_action_label = if window_visible {
-        "Hide Window"
-    } else {
-        "Show Window"
-    };
-    let window_action = MenuItem::with_id("rlru-toggle-window", window_action_label, true, None);
-    let quit = MenuItem::with_id("rlru-quit", "Quit", true, None);
-    if let Err(error) = menu.append_items(&[&separator, &window_action, &quit]) {
-        eprintln!("Failed to append rlru tray window menu: {error}");
-    }
-
-    menu
 }
 
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
-fn append_history_menu(
-    menu: &dioxus::desktop::trayicon::menu::Submenu,
+fn create_tray_state_inner(sender: UnboundedSender<TrayCommand>) -> Result<TrayState, String> {
+    use ksni::blocking::TrayMethods;
+
+    let tray = RlruTrayItem::new(sender);
+    let (thread_sender, thread_receiver) = std::sync::mpsc::channel();
+    let (handle_sender, handle_receiver) = std::sync::mpsc::channel();
+
+    std::thread::spawn(move || {
+        let result = tray
+            .spawn()
+            .map_err(|error| format!("failed to build rlru tray icon: {error}"));
+        match result {
+            Ok(handle) => {
+                let _ = handle_sender.send(Ok(()));
+                run_tray_thread(handle, thread_receiver);
+            }
+            Err(error) => {
+                let _ = handle_sender.send(Err(error));
+            }
+        }
+    });
+
+    handle_receiver
+        .recv()
+        .map_err(|error| format!("failed to start rlru tray thread: {error}"))??;
+
+    Ok(TrayState {
+        sender: thread_sender,
+    })
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn run_tray_thread(
+    handle: ksni::blocking::Handle<RlruTrayItem>,
+    receiver: std::sync::mpsc::Receiver<TrayThreadMessage>,
+) {
+    for message in receiver {
+        match message {
+            TrayThreadMessage::Update(update) => {
+                let _ = handle.update(move |tray| {
+                    tray.summary = Some(update.summary);
+                    tray.history = update.history;
+                    tray.sync_run = update.sync_run;
+                    tray.failed_uploads = update.failed_uploads;
+                });
+            }
+            TrayThreadMessage::Shutdown => {
+                handle.shutdown().wait();
+                return;
+            }
+        }
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn update_tray_state(
+    state: &TrayState,
+    summary: AppSummary,
+    history: Option<Result<Vec<HistoryRow>, String>>,
+    sync_run: SyncRunState,
+    failed_uploads: Vec<ReplayUploadRequest>,
+) {
+    let _ = state
+        .sender
+        .send(TrayThreadMessage::Update(Box::new(TrayUpdate {
+            summary,
+            history,
+            sync_run,
+            failed_uploads,
+        })));
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn disabled_item<T>(label: impl Into<String>) -> ksni::menu::MenuItem<T> {
+    ksni::menu::StandardItem {
+        label: label.into(),
+        enabled: false,
+        ..Default::default()
+    }
+    .into()
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn action_item(
+    label: &str,
+    command: TrayCommand,
+    sender: &UnboundedSender<TrayCommand>,
+    enabled: bool,
+) -> ksni::menu::MenuItem<RlruTrayItem> {
+    let sender = sender.clone();
+    ksni::menu::StandardItem {
+        label: label.to_string(),
+        enabled,
+        activate: Box::new(move |_| {
+            let _ = sender.unbounded_send(command.clone());
+        }),
+        ..Default::default()
+    }
+    .into()
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn submenu(
+    label: impl Into<String>,
+    items: Vec<ksni::menu::MenuItem<RlruTrayItem>>,
+) -> ksni::menu::MenuItem<RlruTrayItem> {
+    ksni::menu::SubMenu {
+        label: label.into(),
+        submenu: items,
+        ..Default::default()
+    }
+    .into()
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn history_menu_items(
     history: Option<&Result<Vec<HistoryRow>, String>>,
     failed_uploads: &[ReplayUploadRequest],
-) {
-    use dioxus::desktop::trayicon::menu::MenuItem;
-
+) -> Vec<ksni::menu::MenuItem<RlruTrayItem>> {
     match history {
-        None => {
-            let item = MenuItem::new("Loading current history", false, None);
-            let _ = menu.append(&item);
-        }
-        Some(Err(error)) => {
-            let item = MenuItem::new(format!("History unavailable: {error}"), false, None);
-            let _ = menu.append(&item);
-        }
-        Some(Ok(rows)) if rows.is_empty() => {
-            let item = MenuItem::new("No current history entries", false, None);
-            let _ = menu.append(&item);
-        }
-        Some(Ok(rows)) => {
-            for row in rows.iter().take(8) {
-                let row_menu = dioxus::desktop::trayicon::menu::Submenu::new(
-                    format!(
-                        "{} - {} - {}",
-                        short_match_id(&row.match_id),
-                        row.map_name,
-                        row.score
-                    ),
-                    true,
-                );
-                let account = MenuItem::new(format!("Account: {}", row.account), false, None);
-                let when = MenuItem::new(format!("When: {}", row.timestamp), false, None);
-                let _ = row_menu.append(&account);
-                let _ = row_menu.append(&when);
-                for destination in &row.upload_destinations {
+        None => vec![disabled_item("Loading current history")],
+        Some(Err(error)) => vec![disabled_item(format!("History unavailable: {error}"))],
+        Some(Ok(rows)) if rows.is_empty() => vec![disabled_item("No current history entries")],
+        Some(Ok(rows)) => rows
+            .iter()
+            .take(8)
+            .map(|row| {
+                let mut row_items = vec![
+                    disabled_item(format!("Account: {}", row.account)),
+                    disabled_item(format!("When: {}", row.timestamp)),
+                ];
+                row_items.extend(row.upload_destinations.iter().map(|destination| {
                     let state = if let Some(failure) =
                         failed_upload(failed_uploads, &destination.target_name, &row.match_id)
                     {
@@ -1591,16 +1602,189 @@ fn append_history_menu(
                     } else {
                         destination.state.as_str()
                     };
-                    let item = MenuItem::new(
-                        format!("{}: {}", destination.target_name, state),
-                        false,
-                        None,
-                    );
-                    let _ = row_menu.append(&item);
-                }
-                let _ = menu.append(&row_menu);
-            }
+                    disabled_item(format!("{}: {}", destination.target_name, state))
+                }));
+
+                submenu(
+                    format!(
+                        "{} - {} - {}",
+                        short_match_id(&row.match_id),
+                        row.map_name,
+                        row.score
+                    ),
+                    row_items,
+                )
+            })
+            .collect(),
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn png_to_argb32(png_data: &[u8]) -> ksni::Icon {
+    let image = image::load_from_memory_with_format(png_data, image::ImageFormat::Png)
+        .expect("embedded PNG is valid")
+        .into_rgba8();
+    let data = image
+        .pixels()
+        .flat_map(|pixel| [pixel[3], pixel[0], pixel[1], pixel[2]])
+        .collect();
+    ksni::Icon {
+        width: image.width() as i32,
+        height: image.height() as i32,
+        data,
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn load_icon_set() -> Vec<ksni::Icon> {
+    vec![png_to_argb32(APP_ICON_PNG)]
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+struct RlruTrayItem {
+    summary: Option<AppSummary>,
+    history: Option<Result<Vec<HistoryRow>, String>>,
+    sync_run: SyncRunState,
+    failed_uploads: Vec<ReplayUploadRequest>,
+    sender: UnboundedSender<TrayCommand>,
+    icons: Vec<ksni::Icon>,
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+impl RlruTrayItem {
+    fn new(sender: UnboundedSender<TrayCommand>) -> Self {
+        Self {
+            summary: None,
+            history: None,
+            sync_run: SyncRunState::default(),
+            failed_uploads: Vec::new(),
+            sender,
+            icons: load_icon_set(),
         }
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+impl ksni::Tray for RlruTrayItem {
+    const MENU_ON_ACTIVATE: bool = true;
+
+    fn id(&self) -> String {
+        "rlru-dioxus".to_string()
+    }
+
+    fn title(&self) -> String {
+        "rlru".to_string()
+    }
+
+    fn icon_name(&self) -> String {
+        String::new()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        self.icons.clone()
+    }
+
+    fn tool_tip(&self) -> ksni::ToolTip {
+        let description = self
+            .summary
+            .as_ref()
+            .map(|summary| tray_tooltip(summary, &self.sync_run, self.failed_uploads.len()))
+            .unwrap_or_else(|| "rlru\nTray data loading".to_string());
+
+        ksni::ToolTip {
+            title: "rlru".to_string(),
+            description,
+            ..Default::default()
+        }
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.sender.unbounded_send(TrayCommand::ShowWindow);
+    }
+
+    fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
+        let mut items = Vec::new();
+        items.push(disabled_item("rlru"));
+        items.push(ksni::menu::MenuItem::Separator);
+
+        if let Some(summary) = self.summary.as_ref() {
+            items.push(disabled_item(tray_sync_label(&self.sync_run)));
+            items.push(disabled_item(format!(
+                "Auto upload: {}, {}",
+                auto_upload_label(summary),
+                summary.interval
+            )));
+        } else {
+            items.push(disabled_item("Tray data loading"));
+        }
+
+        items.push(ksni::menu::MenuItem::Separator);
+        items.push(submenu(
+            "History",
+            history_menu_items(self.history.as_ref(), &self.failed_uploads),
+        ));
+
+        if !self.failed_uploads.is_empty() {
+            let failures = self
+                .failed_uploads
+                .iter()
+                .cloned()
+                .map(|request| {
+                    action_item(
+                        &format_failed_upload_retry_label(&request),
+                        TrayCommand::Retry(request),
+                        &self.sender,
+                        true,
+                    )
+                })
+                .collect();
+            items.push(submenu(
+                format!("Failed Uploads ({})", self.failed_uploads.len()),
+                failures,
+            ));
+        }
+
+        items.extend([
+            ksni::menu::MenuItem::Separator,
+            action_item(
+                "Sync Now",
+                TrayCommand::SyncNow,
+                &self.sender,
+                !self.sync_run.running,
+            ),
+            action_item(
+                "Refresh History",
+                TrayCommand::RefreshHistory,
+                &self.sender,
+                true,
+            ),
+            action_item("Open App", TrayCommand::ShowWindow, &self.sender, true),
+            action_item(
+                "Show/Hide Window",
+                TrayCommand::ToggleWindow,
+                &self.sender,
+                true,
+            ),
+            ksni::menu::MenuItem::Separator,
+            action_item("Quit", TrayCommand::Quit, &self.sender, true),
+        ]);
+
+        items
     }
 }
 
@@ -1630,15 +1814,38 @@ fn DesktopTrayBridge(
     rsx! {}
 }
 
-#[cfg(feature = "desktop")]
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
 fn show_window() {
     let win = dioxus::desktop::window();
     restore_desktop_window_handle(win.window.clone());
 }
 
-#[cfg(feature = "desktop")]
-fn quit_application() {
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn toggle_window_visibility() {
+    let win = dioxus::desktop::window();
+    if win.window.is_visible() {
+        win.set_visible(false);
+    } else {
+        restore_desktop_window_handle(win.window.clone());
+    }
+}
+
+#[cfg(all(
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+fn quit_application(mut tray_state: Signal<Option<TrayState>>) {
     use dioxus::desktop::WindowCloseBehaviour;
+
+    if let Some(tray_state) = tray_state.write().take() {
+        let _ = tray_state.sender.send(TrayThreadMessage::Shutdown);
+    }
 
     cleanup_desktop_instance_socket();
 
@@ -1750,6 +1957,10 @@ fn format_failed_upload(failure: &ReplayUploadRequest) -> String {
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
+fn format_failed_upload_retry_label(failure: &ReplayUploadRequest) -> String {
+    format!("Retry {}", format_failed_upload(failure))
+}
+
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -1762,10 +1973,6 @@ fn auto_upload_label(summary: &AppSummary) -> &'static str {
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -1813,18 +2020,6 @@ fn tray_tooltip(summary: &AppSummary, sync_run: &SyncRunState, failed_count: usi
         summary.interval,
         failed_count
     )
-}
-
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
-fn tray_retry_menu_id(request: &ReplayUploadRequest) -> String {
-    format!("rlru-retry:{}:{}", request.target_name, request.match_id)
 }
 
 #[component]

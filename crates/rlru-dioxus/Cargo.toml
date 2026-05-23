@@ -12,13 +12,16 @@ path = "src/main.rs"
 
 [dependencies]
 dioxus = { version = "=0.7.9", default-features = false, features = ["launch", "lib"] }
+futures-util = { version = "0.3", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+ksni = { version = "0.3", optional = true, features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 web-sys = { version = "0.3", features = ["Location", "Window"] }
 
 [features]
 default = ["web"]
 web = ["dioxus/web"]
-desktop = ["dioxus/desktop"]
+desktop = ["dioxus/desktop", "dep:futures-util", "dep:image", "dep:ksni"]
 mobile = ["dioxus/mobile"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
