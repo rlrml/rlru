@@ -162,16 +162,12 @@
         mkWindowsPackage = {
           pname,
           cargoPackage ? "rlru",
-          buildFeatures ? [],
-          buildNoDefaultFeatures ? false,
-          installExtra ? "",
         }:
           rustPlatform.buildRustPackage {
-            inherit pname buildFeatures buildNoDefaultFeatures;
+            inherit pname;
             version = "0.1.0";
             src = cleanSrc;
             cargoLock.lockFile = ./Cargo.lock;
-            cargoBuildFlags = ["-p" cargoPackage "--target" windowsTarget];
             doCheck = false;
             nativeBuildInputs = [
               pkgs.pkg-config
@@ -184,11 +180,17 @@
             "CARGO_TARGET_X86_64_PC_WINDOWS_GNU_AR" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}ar";
             "CC_x86_64_pc_windows_gnu" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}gcc";
             "AR_x86_64_pc_windows_gnu" = "${mingwPkgs.stdenv.cc}/bin/${mingwPkgs.stdenv.cc.targetPrefix}ar";
+            buildPhase = ''
+              runHook preBuild
+
+              cargo build --frozen --offline --release -p ${cargoPackage} --target ${windowsTarget}
+
+              runHook postBuild
+            '';
             installPhase = ''
               runHook preInstall
 
               install -Dm755 "target/${windowsTarget}/release/${pname}.exe" "$out/bin/${pname}.exe"
-              ${installExtra}
 
               runHook postInstall
             '';
