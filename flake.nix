@@ -118,7 +118,7 @@
           rustPlatform.buildRustPackage ({
               inherit pname buildFeatures buildNoDefaultFeatures;
               inherit desktopItems postInstall;
-              version = "0.1.0";
+              version = "0.1.1";
               src = cleanSrc;
               cargoLock.lockFile = ./Cargo.lock;
               cargoBuildFlags = ["-p" cargoPackage];
@@ -140,7 +140,7 @@
             });
         rlruLinuxStaticCli = rustPlatform.buildRustPackage {
           pname = "rlru";
-          version = "0.1.0";
+          version = "0.1.1";
           src = cleanSrc;
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = ["-p" "rlru" "--target" linuxStaticTarget];
@@ -173,7 +173,7 @@
         }:
           rustPlatform.buildRustPackage {
             inherit pname;
-            version = "0.1.0";
+            version = "0.1.1";
             src = cleanSrc;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false;

@@ -1,6 +1,6 @@
 [package]
 name = "psynet"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Rocket League PsyNet API client"
 license = "MIT OR Apache-2.0"
