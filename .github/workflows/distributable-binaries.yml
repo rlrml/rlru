@@ -132,7 +132,7 @@ jobs:
 
       - name: Check Cargo packages
         run: |
-          nix develop --command cargo package -p psynet --allow-dirty
+          nix develop --command cargo package -p psynet --locked
           echo "rlru is packaged by cargo publish after psynet is visible on crates.io"
 
   cargo-publish:
@@ -191,6 +191,24 @@ jobs:
             curl -fsS "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1
           }
 
+          cargo_publish_with_retries() {
+            local crate="$1"
+
+            for attempt in 1 2 3; do
+              if nix develop --command cargo publish -p "$crate" --locked; then
+                return
+              fi
+
+              if [[ "$attempt" -eq 3 ]]; then
+                return 1
+              fi
+
+              sleep_seconds=$((attempt * 20))
+              echo "cargo publish failed for $crate on attempt $attempt; retrying in ${sleep_seconds}s..."
+              sleep "$sleep_seconds"
+            done
+          }
+
           publish_crate() {
             local crate="$1"
             local version
@@ -201,7 +219,7 @@ jobs:
               return
             fi
 
-            nix develop --command cargo publish -p "$crate" --token "$CARGO_REGISTRY_TOKEN"
+            cargo_publish_with_retries "$crate"
           }
 
           wait_for_crate() {
