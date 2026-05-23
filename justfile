@@ -17,6 +17,26 @@ check:
     cargo clippy --workspace --all-targets -- -D warnings
     cargo test --workspace
 
+release-tag:
+    #!/usr/bin/env bash
+    set -euo pipefail
+
+    git diff --quiet
+    git diff --cached --quiet
+
+    version="$(cargo pkgid -p rlru | sed 's/.*[#@]//')"
+    tag="v${version}"
+
+    git fetch --tags origin
+
+    if git rev-parse "refs/tags/$tag" >/dev/null 2>&1; then
+      echo "tag $tag already exists" >&2
+      exit 1
+    fi
+
+    git tag -a "$tag" -m "$tag"
+    git push origin "$tag"
+
 fmt:
     cargo fmt --all
 

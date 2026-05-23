@@ -14,6 +14,25 @@ just run -- --help
 just dioxus-desktop
 ```
 
+## Releases
+
+GitHub releases are published when a `vX.Y.Z` tag matching the `rlru` Cargo
+package version is pushed. To cut a release from a clean `main` checkout:
+
+```bash
+just release-tag
+```
+
+The release workflow uploads downloadable assets to the GitHub Releases page:
+
+- `rlru-cli-linux-x86_64.tar.gz`
+- `rlru-cli-windows-x86_64.zip`
+- `rlru-dioxus-linux-x86_64.AppImage`
+
+If the `CARGO_REGISTRY_TOKEN` repository secret is configured, the same tag run
+also publishes the crates to crates.io. GitHub release assets are still created
+when that secret is absent.
+
 ## Windows Builds From Linux
 
 The dev shell includes the Fenix `x86_64-pc-windows-gnu` Rust target and the
