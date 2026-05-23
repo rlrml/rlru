@@ -25,7 +25,6 @@ fn desktop_data_dir() -> std::path::PathBuf {
 #[cfg(feature = "desktop")]
 #[derive(Clone, Copy, Debug)]
 struct DesktopSettings {
-    exit_in_tray: bool,
     start_in_tray: bool,
 }
 
@@ -33,7 +32,6 @@ struct DesktopSettings {
 impl Default for DesktopSettings {
     fn default() -> Self {
         Self {
-            exit_in_tray: true,
             start_in_tray: true,
         }
     }
@@ -50,7 +48,6 @@ fn load_desktop_settings() -> DesktopSettings {
             Config::load_or_default(&paths.config_file())
                 .ok()
                 .map(|config| DesktopSettings {
-                    exit_in_tray: config.behavior.exit_in_tray,
                     start_in_tray: config.behavior.start_in_tray,
                 })
         })
@@ -102,7 +99,6 @@ struct AppSummary {
     accounts: Vec<AccountSummary>,
     upload_destinations: Vec<UploadDestinationSummary>,
     auto_upload: bool,
-    exit_in_tray: bool,
     start_in_tray: bool,
     upload_on_launch: bool,
     no_upload_while_connected: bool,
@@ -216,16 +212,11 @@ fn launch_app() {
     use dioxus::desktop::{icon_from_memory, Config, WindowBuilder, WindowCloseBehaviour};
 
     let settings = load_desktop_settings();
-    let close_behaviour = if settings.exit_in_tray {
-        WindowCloseBehaviour::WindowHides
-    } else {
-        WindowCloseBehaviour::WindowCloses
-    };
     let mut config = Config::new()
         .with_custom_head(desktop_head())
         .with_data_directory(desktop_data_dir())
         .with_background_color((243, 246, 244, 255))
-        .with_close_behaviour(close_behaviour)
+        .with_close_behaviour(WindowCloseBehaviour::WindowCloses)
         .with_window(
             WindowBuilder::new()
                 .with_title("rlru")
@@ -394,7 +385,6 @@ fn App() -> Element {
                 });
             },
         }
-        DesktopWindowBehavior { exit_in_tray: current_summary.exit_in_tray }
         main {
             class: "shell",
             Sidebar {
@@ -607,19 +597,6 @@ fn App() -> Element {
                                             "Startup now hides the window to the tray".to_string()
                                         } else {
                                             "Startup now opens the window".to_string()
-                                        });
-                                    }
-                                    Err(error) => action_message.set(error),
-                                }
-                            },
-                            onexitintray: move |enabled| {
-                                match save_exit_in_tray(enabled) {
-                                    Ok(updated) => {
-                                        summary.set(updated);
-                                        action_message.set(if enabled {
-                                            "Closing the window now hides to tray".to_string()
-                                        } else {
-                                            "Closing the window now exits the app".to_string()
                                         });
                                     }
                                     Err(error) => action_message.set(error),
@@ -1110,7 +1087,6 @@ fn ActivityView(
     summary: AppSummary,
     onautoupload: EventHandler<bool>,
     onstartintray: EventHandler<bool>,
-    onexitintray: EventHandler<bool>,
 ) -> Element {
     let auto_upload_value = if summary.auto_upload {
         "Enabled"
@@ -1134,17 +1110,7 @@ fn ActivityView(
     } else {
         "Start hidden in tray"
     };
-    let next_exit_in_tray = !summary.exit_in_tray;
-    let exit_in_tray_label = if summary.exit_in_tray {
-        "Close hides window"
-    } else {
-        "Close exits app"
-    };
-    let exit_in_tray_action = if summary.exit_in_tray {
-        "Exit on close"
-    } else {
-        "Hide on close"
-    };
+    let close_behavior_label = "Hides to tray when available";
     let upload_on_launch = if summary.upload_on_launch {
         "Run sync at launch"
     } else {
@@ -1181,13 +1147,8 @@ fn ActivityView(
                 }
             }
             div { class: "activity-row main-action",
-                div { class: if summary.exit_in_tray { "status-dot" } else { "status-dot off" } }
-                p { "Window close: {exit_in_tray_label}" }
-                button {
-                    class: "secondary-button",
-                    onclick: move |_| onexitintray.call(next_exit_in_tray),
-                    "{exit_in_tray_action}"
-                }
+                div { class: "status-dot" }
+                p { "Window close: {close_behavior_label}" }
             }
             dl { class: "details",
                 dt { "Cadence" }
@@ -1253,6 +1214,16 @@ fn DesktopTrayBridge(
             }
         }
     });
+
+    let tray_available = tray_icon.is_some();
+    use_effect(use_reactive!(|tray_available| {
+        let behaviour = if tray_available {
+            WindowCloseBehaviour::WindowHides
+        } else {
+            WindowCloseBehaviour::WindowCloses
+        };
+        window().set_close_behavior(behaviour);
+    }));
 
     let failed_uploads_for_effect = failed_uploads.clone();
     use_effect(use_reactive!(|(
@@ -1464,30 +1435,6 @@ fn DesktopTrayBridge(
         onrefreshhistory,
         onretry,
     );
-    rsx! {}
-}
-
-#[cfg(feature = "desktop")]
-#[component]
-fn DesktopWindowBehavior(exit_in_tray: bool) -> Element {
-    use dioxus::desktop::{window, WindowCloseBehaviour};
-
-    use_effect(use_reactive!(|exit_in_tray| {
-        let behaviour = if exit_in_tray {
-            WindowCloseBehaviour::WindowHides
-        } else {
-            WindowCloseBehaviour::WindowCloses
-        };
-        window().set_close_behavior(behaviour);
-    }));
-
-    rsx! {}
-}
-
-#[cfg(not(feature = "desktop"))]
-#[component]
-fn DesktopWindowBehavior(exit_in_tray: bool) -> Element {
-    let _ = exit_in_tray;
     rsx! {}
 }
 
@@ -1808,7 +1755,6 @@ fn load_summary() -> AppSummary {
                     })
                     .collect(),
                 auto_upload: config.behavior.auto_upload,
-                exit_in_tray: config.behavior.exit_in_tray,
                 start_in_tray: config.behavior.start_in_tray,
                 upload_on_launch: config.behavior.upload_on_launch,
                 no_upload_while_connected: config.behavior.no_upload_while_connected,
@@ -1832,7 +1778,6 @@ fn load_summary() -> AppSummary {
             accounts: Vec::new(),
             upload_destinations: Vec::new(),
             auto_upload: false,
-            exit_in_tray: true,
             start_in_tray: true,
             upload_on_launch: false,
             no_upload_while_connected: false,
@@ -1989,11 +1934,6 @@ fn save_start_in_tray(enabled: bool) -> Result<AppSummary, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_exit_in_tray(enabled: bool) -> Result<AppSummary, String> {
-    update_behavior(|behavior| behavior.exit_in_tray = enabled)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary, String> {
     use std::time::Duration;
 
@@ -2110,7 +2050,6 @@ fn load_summary() -> AppSummary {
             selected: true,
         }],
         auto_upload: true,
-        exit_in_tray: true,
         start_in_tray: true,
         upload_on_launch: false,
         no_upload_while_connected: false,
@@ -2183,13 +2122,6 @@ fn save_auto_upload(enabled: bool) -> Result<AppSummary, String> {
 fn save_start_in_tray(enabled: bool) -> Result<AppSummary, String> {
     let mut summary = load_summary();
     summary.start_in_tray = enabled;
-    Ok(summary)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn save_exit_in_tray(enabled: bool) -> Result<AppSummary, String> {
-    let mut summary = load_summary();
-    summary.exit_in_tray = enabled;
     Ok(summary)
 }
 
