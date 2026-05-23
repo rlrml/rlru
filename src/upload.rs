@@ -430,7 +430,7 @@ mod tests {
         let result = classify_upload_response(
             &target,
             StatusCode::OK,
-            Some("http://127.0.0.1:8080/replays/replay-1".to_string()),
+            Some("https://rocket-sense.duckdns.org/replays/replay-1".to_string()),
             r#"{"deduplicated":true,"replay":{"id":"replay-1"}}"#,
         )
         .unwrap();
@@ -438,7 +438,7 @@ mod tests {
         assert_eq!(result.outcome, UploadOutcome::Duplicate);
         assert_eq!(
             result.location,
-            Some("http://127.0.0.1:8080/replays/replay-1".to_string())
+            Some("https://rocket-sense.duckdns.org/replays/replay-1".to_string())
         );
     }
 }

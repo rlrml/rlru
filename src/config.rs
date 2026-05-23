@@ -256,7 +256,7 @@ impl UploadDestinationConfig {
     pub fn rocket_sense() -> Self {
         Self {
             name: "Rocket Sense".to_string(),
-            url: Url::parse("http://127.0.0.1:8080/api/v1")
+            url: Url::parse("https://rocket-sense.duckdns.org/api/v1")
                 .expect("valid built-in Rocket Sense URL"),
             predefined: true,
             primary: false,
@@ -540,11 +540,11 @@ mod tests {
                 .endpoint_url(&target.replay_upload.path)
                 .unwrap()
                 .as_str(),
-            "http://127.0.0.1:8080/api/v1/replays"
+            "https://rocket-sense.duckdns.org/api/v1/replays"
         );
         assert_eq!(
             target.endpoint_url(&target.ping.path).unwrap().as_str(),
-            "http://127.0.0.1:8080/api/v1/health"
+            "https://rocket-sense.duckdns.org/api/v1/health"
         );
         assert_eq!(
             target.auth,

@@ -45,6 +45,6 @@ rlru --config ~/.config/rlru/config.toml config validate
 
 Tokens are stored separately from TOML config under the XDG config directory.
 
-The default upload destinations include Rocky, Ballchasing, and a local Rocket
-Sense server at `http://127.0.0.1:8080/api/v1`. For Rocket Sense uploads, set
+The default upload destinations include Rocky, Ballchasing, and Rocket Sense at
+`https://rocket-sense.duckdns.org/api/v1`. For Rocket Sense uploads, set
 `ROCKET_SENSE_TOKEN` to a Rocket Sense bearer token before running `rlru sync`.

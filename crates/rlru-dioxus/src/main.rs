@@ -2043,7 +2043,7 @@ async fn load_history() -> Result<Vec<HistoryRow>, String> {
                 state: "Uploaded".to_string(),
                 uploaded: true,
                 upload_enabled: true,
-                location: Some("http://127.0.0.1:8080/replays/demo".to_string()),
+                location: Some("https://rocket-sense.duckdns.org/replays/demo".to_string()),
             }],
         },
         HistoryRow {
@@ -2102,7 +2102,7 @@ fn load_summary() -> AppSummary {
         }],
         upload_destinations: vec![UploadDestinationSummary {
             name: "Rocket Sense".to_string(),
-            url: "http://127.0.0.1:8080/api/v1".to_string(),
+            url: "https://rocket-sense.duckdns.org/api/v1".to_string(),
             primary: true,
             predefined: true,
             upload_enabled: true,
