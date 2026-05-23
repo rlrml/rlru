@@ -145,7 +145,7 @@ impl Default for BehaviorConfig {
         Self {
             auto_upload: true,
             exit_in_tray: true,
-            start_in_tray: true,
+            start_in_tray: false,
             upload_on_launch: false,
             no_upload_while_connected: true,
             auto_upload_interval: Duration::from_secs(45 * 60),

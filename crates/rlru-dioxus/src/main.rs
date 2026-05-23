@@ -28,38 +28,6 @@ fn desktop_data_dir() -> std::path::PathBuf {
         .join("rlru-dioxus-webview")
 }
 
-#[cfg(feature = "desktop")]
-#[derive(Clone, Copy, Debug)]
-struct DesktopSettings {
-    start_in_tray: bool,
-}
-
-#[cfg(feature = "desktop")]
-impl Default for DesktopSettings {
-    fn default() -> Self {
-        Self {
-            start_in_tray: true,
-        }
-    }
-}
-
-#[cfg(feature = "desktop")]
-fn load_desktop_settings() -> DesktopSettings {
-    use rlru::paths::AppPaths;
-    use rlru::Config;
-
-    AppPaths::discover()
-        .ok()
-        .and_then(|paths| {
-            Config::load_or_default(&paths.config_file())
-                .ok()
-                .map(|config| DesktopSettings {
-                    start_in_tray: config.behavior.start_in_tray,
-                })
-        })
-        .unwrap_or_default()
-}
-
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -290,7 +258,6 @@ struct AppSummary {
     accounts: Vec<AccountSummary>,
     upload_destinations: Vec<UploadDestinationSummary>,
     auto_upload: bool,
-    start_in_tray: bool,
     upload_on_launch: bool,
     no_upload_while_connected: bool,
     selected_account: Option<String>,
@@ -403,7 +370,6 @@ fn main() {
 fn launch_app() {
     use dioxus::desktop::{icon_from_memory, Config, WindowBuilder, WindowCloseBehaviour};
 
-    let settings = load_desktop_settings();
     let windows = shared_desktop_windows();
     #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
     {
@@ -472,7 +438,6 @@ fn App() -> Element {
         }
         document::Style { "{APP_CSS}" }
         DesktopTrayBridge {
-            start_in_tray: current_summary.start_in_tray,
             summary: current_summary.clone(),
             history: current_history.clone(),
             sync_run: current_sync_run.clone(),
@@ -785,19 +750,6 @@ fn App() -> Element {
                                             "Auto upload enabled in config".to_string()
                                         } else {
                                             "Auto upload disabled in config".to_string()
-                                        });
-                                    }
-                                    Err(error) => action_message.set(error),
-                                }
-                            },
-                            onstartintray: move |enabled| {
-                                match save_start_in_tray(enabled) {
-                                    Ok(updated) => {
-                                        summary.set(updated);
-                                        action_message.set(if enabled {
-                                            "Startup now hides the window to the tray".to_string()
-                                        } else {
-                                            "Startup now opens the window".to_string()
                                         });
                                     }
                                     Err(error) => action_message.set(error),
@@ -1290,11 +1242,7 @@ fn UploadDestinationsView(summary: AppSummary) -> Element {
 }
 
 #[component]
-fn ActivityView(
-    summary: AppSummary,
-    onautoupload: EventHandler<bool>,
-    onstartintray: EventHandler<bool>,
-) -> Element {
+fn ActivityView(summary: AppSummary, onautoupload: EventHandler<bool>) -> Element {
     let auto_upload_value = if summary.auto_upload {
         "Enabled"
     } else {
@@ -1306,17 +1254,7 @@ fn ActivityView(
     } else {
         "Enable auto upload"
     };
-    let next_start_in_tray = !summary.start_in_tray;
-    let start_in_tray_label = if summary.start_in_tray {
-        "Hidden in tray"
-    } else {
-        "Window opens"
-    };
-    let start_in_tray_action = if summary.start_in_tray {
-        "Open window at startup"
-    } else {
-        "Start hidden in tray"
-    };
+    let startup_behavior_label = "Window opens";
     let close_behavior_label = "Hides to tray when available";
     let upload_on_launch = if summary.upload_on_launch {
         "Run sync at launch"
@@ -1345,13 +1283,8 @@ fn ActivityView(
                 }
             }
             div { class: "activity-row main-action",
-                div { class: if summary.start_in_tray { "status-dot" } else { "status-dot off" } }
-                p { "Startup: {start_in_tray_label}" }
-                button {
-                    class: "secondary-button",
-                    onclick: move |_| onstartintray.call(next_start_in_tray),
-                    "{start_in_tray_action}"
-                }
+                div { class: "status-dot" }
+                p { "Startup: {startup_behavior_label}" }
             }
             div { class: "activity-row main-action",
                 div { class: "status-dot" }
@@ -1375,7 +1308,6 @@ fn ActivityView(
 ))]
 #[component]
 fn DesktopTrayBridge(
-    start_in_tray: bool,
     summary: AppSummary,
     history: Option<Result<Vec<HistoryRow>, String>>,
     sync_run: SyncRunState,
@@ -1385,17 +1317,29 @@ fn DesktopTrayBridge(
     onretry: EventHandler<ReplayUploadRequest>,
 ) -> Element {
     use dioxus::desktop::icon_from_memory;
+    use dioxus::desktop::tao::event::{Event, WindowEvent};
     use dioxus::desktop::trayicon::{DioxusTrayIcon, MouseButton, TrayIconBuilder, TrayIconEvent};
-    use dioxus::desktop::{use_tray_icon_event_handler, use_tray_menu_event_handler};
+    use dioxus::desktop::{
+        use_tray_icon_event_handler, use_tray_menu_event_handler, use_wry_event_handler,
+    };
     use dioxus::desktop::{window, WindowCloseBehaviour};
+
+    let mut window_visible = use_signal_sync(|| true);
 
     let tray_icon = use_hook({
         let summary = summary.clone();
         let history = history.clone();
         let sync_run = sync_run.clone();
         let failed_uploads = failed_uploads.clone();
+        let window_is_visible = window_visible();
         move || {
-            let menu = build_tray_menu(&summary, history.as_ref(), &sync_run, &failed_uploads);
+            let menu = build_tray_menu(
+                &summary,
+                history.as_ref(),
+                &sync_run,
+                &failed_uploads,
+                window_is_visible,
+            );
             let mut builder = TrayIconBuilder::new()
                 .with_id("rlru")
                 .with_menu(Box::new(menu))
@@ -1412,10 +1356,6 @@ fn DesktopTrayBridge(
                 Ok(tray) => Some(tray),
                 Err(error) => {
                     eprintln!("Failed to initialize rlru tray icon: {error}");
-                    if start_in_tray {
-                        window().set_visible(true);
-                        window().set_focus();
-                    }
                     None
                 }
             }
@@ -1423,14 +1363,16 @@ fn DesktopTrayBridge(
     });
 
     let tray_available = tray_icon.is_some();
-    use_hook(move || {
-        if start_in_tray && tray_available {
-            eprintln!("Initial rlru desktop window created; hiding it to tray after realization");
-            let win = window().window.clone();
-            std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(2));
-                win.set_visible(false);
-            });
+
+    use_wry_event_handler(move |event, _| {
+        if matches!(
+            event,
+            Event::WindowEvent {
+                event: WindowEvent::CloseRequested,
+                ..
+            }
+        ) {
+            window_visible.set(false);
         }
     });
 
@@ -1450,6 +1392,7 @@ fn DesktopTrayBridge(
         sync_run,
         failed_uploads_for_effect,
     )| {
+        let window_is_visible = window_visible();
         if let Some(tray) = tray_icon.as_ref() {
             let tooltip = tray_tooltip(&summary, &sync_run, failed_uploads_for_effect.len());
             if let Err(error) = tray.set_tooltip(Some(tooltip)) {
@@ -1460,13 +1403,21 @@ fn DesktopTrayBridge(
                 history.as_ref(),
                 &sync_run,
                 &failed_uploads_for_effect,
+                window_is_visible,
             ))));
         }
     }));
 
     use_tray_menu_event_handler(move |event| match event.id().as_ref() {
-        "rlru-show-window" => show_window(),
-        "rlru-hide-window" => window().set_visible(false),
+        "rlru-toggle-window" => {
+            if window().window.is_visible() {
+                window().set_visible(false);
+                window_visible.set(false);
+            } else {
+                show_window();
+                window_visible.set(true);
+            }
+        }
         "rlru-sync-now" => onsync.call(()),
         "rlru-refresh-history" => onrefreshhistory.call(()),
         "rlru-quit" => quit_application(),
@@ -1488,7 +1439,10 @@ fn DesktopTrayBridge(
         | TrayIconEvent::DoubleClick {
             button: MouseButton::Left,
             ..
-        } => show_window(),
+        } => {
+            show_window();
+            window_visible.set(true);
+        }
         _ => {}
     });
 
@@ -1504,6 +1458,7 @@ fn build_tray_menu(
     history: Option<&Result<Vec<HistoryRow>, String>>,
     sync_run: &SyncRunState,
     failed_uploads: &[ReplayUploadRequest],
+    window_visible: bool,
 ) -> dioxus::desktop::trayicon::menu::Menu {
     use dioxus::desktop::trayicon::menu::{
         IsMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
@@ -1569,10 +1524,14 @@ fn build_tray_menu(
     }
 
     let separator = PredefinedMenuItem::separator();
-    let show = MenuItem::with_id("rlru-show-window", "Open rlru", true, None);
-    let hide = MenuItem::with_id("rlru-hide-window", "Hide Window", true, None);
+    let window_action_label = if window_visible {
+        "Hide Window"
+    } else {
+        "Show Window"
+    };
+    let window_action = MenuItem::with_id("rlru-toggle-window", window_action_label, true, None);
     let quit = MenuItem::with_id("rlru-quit", "Quit", true, None);
-    if let Err(error) = menu.append_items(&[&separator, &show, &hide, &quit]) {
+    if let Err(error) = menu.append_items(&[&separator, &window_action, &quit]) {
         eprintln!("Failed to append rlru tray window menu: {error}");
     }
 
@@ -1645,7 +1604,6 @@ fn append_history_menu(
 )))]
 #[component]
 fn DesktopTrayBridge(
-    start_in_tray: bool,
     summary: AppSummary,
     history: Option<Result<Vec<HistoryRow>, String>>,
     sync_run: SyncRunState,
@@ -1655,7 +1613,6 @@ fn DesktopTrayBridge(
     onretry: EventHandler<ReplayUploadRequest>,
 ) -> Element {
     let _ = (
-        start_in_tray,
         summary,
         history,
         sync_run,
@@ -2044,7 +2001,6 @@ fn load_summary() -> AppSummary {
                     })
                     .collect(),
                 auto_upload: config.behavior.auto_upload,
-                start_in_tray: config.behavior.start_in_tray,
                 upload_on_launch: config.behavior.upload_on_launch,
                 no_upload_while_connected: config.behavior.no_upload_while_connected,
                 selected_account,
@@ -2067,7 +2023,6 @@ fn load_summary() -> AppSummary {
             accounts: Vec::new(),
             upload_destinations: Vec::new(),
             auto_upload: false,
-            start_in_tray: true,
             upload_on_launch: false,
             no_upload_while_connected: false,
             selected_account: None,
@@ -2228,11 +2183,6 @@ fn save_auto_upload(enabled: bool) -> Result<AppSummary, String> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn save_start_in_tray(enabled: bool) -> Result<AppSummary, String> {
-    update_behavior(|behavior| behavior.start_in_tray = enabled)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary, String> {
     use std::time::Duration;
 
@@ -2349,7 +2299,6 @@ fn load_summary() -> AppSummary {
             selected: true,
         }],
         auto_upload: true,
-        start_in_tray: true,
         upload_on_launch: false,
         no_upload_while_connected: false,
         selected_account: Some("colonelpanic8".to_string()),
@@ -2414,13 +2363,6 @@ fn platform_preview_label(value: &str) -> &'static str {
 fn save_auto_upload(enabled: bool) -> Result<AppSummary, String> {
     let mut summary = load_summary();
     summary.auto_upload = enabled;
-    Ok(summary)
-}
-
-#[cfg(target_arch = "wasm32")]
-fn save_start_in_tray(enabled: bool) -> Result<AppSummary, String> {
-    let mut summary = load_summary();
-    summary.start_in_tray = enabled;
     Ok(summary)
 }
 
