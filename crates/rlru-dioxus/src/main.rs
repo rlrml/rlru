@@ -1681,7 +1681,7 @@ impl RlruTrayItem {
     not(any(target_os = "ios", target_os = "android"))
 ))]
 impl ksni::Tray for RlruTrayItem {
-    const MENU_ON_ACTIVATE: bool = true;
+    const MENU_ON_ACTIVATE: bool = false;
 
     fn id(&self) -> String {
         "rlru-dioxus".to_string()
@@ -1714,7 +1714,7 @@ impl ksni::Tray for RlruTrayItem {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.sender.unbounded_send(TrayCommand::ShowWindow);
+        let _ = self.sender.unbounded_send(TrayCommand::ToggleWindow);
     }
 
     fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
