@@ -244,6 +244,7 @@
                   terminal = false;
                   categories = ["Game" "Utility"];
                   startupNotify = true;
+                  startupWMClass = "org.colonelpanic.rlru.dioxus";
                 })
               ];
               postInstall = lib.optionalString isLinux ''

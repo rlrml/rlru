@@ -19,6 +19,8 @@ use rlru::app::{
 
 const APP_CSS: &str = include_str!("../assets/styles.css");
 #[cfg(feature = "desktop")]
+const APP_ID: &str = "org.colonelpanic.rlru.dioxus";
+#[cfg(feature = "desktop")]
 const APP_ICON_PNG: &[u8] = include_bytes!("../assets/icons/rlru-icon-1024.png");
 #[cfg(all(
     feature = "desktop",
@@ -300,6 +302,16 @@ fn launch_app() {
     match icon_from_memory::<dioxus::desktop::tao::window::Icon>(APP_ICON_PNG) {
         Ok(icon) => config = config.with_icon(icon),
         Err(error) => eprintln!("Failed to load rlru window icon: {error}"),
+    }
+
+    #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]
+    {
+        use dioxus::desktop::tao::event_loop::EventLoopBuilder;
+        use dioxus::desktop::tao::platform::unix::EventLoopBuilderExtUnix;
+
+        let mut event_loop = EventLoopBuilder::with_user_event();
+        event_loop.with_app_id(APP_ID);
+        config = config.with_event_loop(event_loop.build());
     }
 
     dioxus::LaunchBuilder::desktop()
@@ -1571,7 +1583,7 @@ impl ksni::Tray for RlruTrayItem {
     }
 
     fn icon_name(&self) -> String {
-        String::new()
+        APP_ID.to_string()
     }
 
     fn icon_pixmap(&self) -> Vec<ksni::Icon> {
