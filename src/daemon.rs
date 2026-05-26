@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{BehaviorConfig, Config};
 use crate::paths::AppPaths;
+use crate::state_file::write_atomically;
 use crate::sync::{SyncService, SyncSummary};
 
 pub async fn run_sync_daemon(
@@ -155,18 +156,8 @@ fn save_daemon_sync_state(paths: &AppPaths, state: &DaemonSyncState) {
 }
 
 fn write_daemon_sync_state(paths: &AppPaths, state: &DaemonSyncState) -> Result<()> {
-    fs::create_dir_all(&paths.data_dir)
-        .with_context(|| format!("failed to create {}", paths.data_dir.display()))?;
     let path = paths.sync_state_file();
-    let temp_path = path.with_extension("toml.part");
     let content = toml::to_string_pretty(state).context("failed to serialize daemon sync state")?;
-    fs::write(&temp_path, content)
-        .with_context(|| format!("failed to write daemon sync state {}", temp_path.display()))?;
-    fs::rename(&temp_path, &path).with_context(|| {
-        format!(
-            "failed to move daemon sync state {} to {}",
-            temp_path.display(),
-            path.display()
-        )
-    })
+    write_atomically(&path, content)
+        .with_context(|| format!("failed to write daemon sync state {}", path.display()))
 }

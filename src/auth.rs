@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -12,6 +12,7 @@ use tokio::time::sleep;
 
 use crate::config::AccountConfig;
 use crate::paths::AppPaths;
+use crate::state_file::write_private_atomically;
 
 const EGS_USER_AGENT: &str =
     "UELauncher/11.0.1-14907503+++Portal+Release-Live Windows/10.0.19041.1.256.64bit";
@@ -453,22 +454,9 @@ fn read_secret_with_legacy(
     Ok(None)
 }
 
-fn write_secret(path: &PathBuf, value: &SecretString) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::write(path, format!("{}\n", value.expose_secret()))
-        .with_context(|| format!("failed to write token {}", path.display()))?;
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to set private permissions on {}", path.display()))?;
-    }
-
-    Ok(())
+fn write_secret(path: &Path, value: &SecretString) -> Result<()> {
+    write_private_atomically(path, format!("{}\n", value.expose_secret()))
+        .with_context(|| format!("failed to write token {}", path.display()))
 }
 
 fn remove_if_exists(path: &PathBuf) -> Result<()> {

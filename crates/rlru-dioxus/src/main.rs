@@ -116,26 +116,13 @@ fn App() -> Element {
             failed_uploads: current_failed_uploads.clone(),
             onsync: move |_| {
                 backfill_running.set(true);
-                let started_at = now_label();
-                sync_run.set(SyncRunState {
-                    running: true,
-                    last_started_at: Some(started_at),
-                    last_completed_at: sync_run().last_completed_at.clone(),
-                    last_summary: sync_run().last_summary.clone(),
-                    last_error: None,
-                });
+                sync_run.set(sync_run().started(now_label()));
                 history_message.set("Syncing upload destinations from current RL API history".to_string());
                 spawn(async move {
                     match backfill_upload_destinations().await {
                         Ok(run_summary) => {
                             failed_uploads.set(dedupe_upload_requests(run_summary.failed_uploads.clone()));
-                            sync_run.set(SyncRunState {
-                                running: false,
-                                last_started_at: sync_run().last_started_at.clone(),
-                                last_completed_at: Some(now_label()),
-                                last_summary: Some(run_summary.clone()),
-                                last_error: None,
-                            });
+                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
                             history_message.set(format_backfill_message(
                                 format!(
                                     "Sync complete: {} uploaded, {} duplicates, {} cached, {} failed",
@@ -149,13 +136,7 @@ fn App() -> Element {
                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }
                         Err(error) => {
-                            sync_run.set(SyncRunState {
-                                running: false,
-                                last_started_at: sync_run().last_started_at.clone(),
-                                last_completed_at: Some(now_label()),
-                                last_summary: sync_run().last_summary.clone(),
-                                last_error: Some(error.clone()),
-                            });
+                            sync_run.set(sync_run().failed(now_label(), error.clone()));
                             history_message.set(error);
                         }
                     }
@@ -169,14 +150,7 @@ fn App() -> Element {
             },
             onretry: move |request: ReplayUploadRequest| {
                 uploading_replay.set(Some(request.clone()));
-                let started_at = now_label();
-                sync_run.set(SyncRunState {
-                    running: true,
-                    last_started_at: Some(started_at),
-                    last_completed_at: sync_run().last_completed_at.clone(),
-                    last_summary: sync_run().last_summary.clone(),
-                    last_error: None,
-                });
+                sync_run.set(sync_run().started(now_label()));
                 history_message.set(format!(
                     "Retrying {} to {}",
                     short_match_id(&request.match_id),
@@ -191,13 +165,7 @@ fn App() -> Element {
                                 upsert_failed_upload(&mut failures, failure.clone());
                             }
                             failed_uploads.set(failures);
-                            sync_run.set(SyncRunState {
-                                running: false,
-                                last_started_at: sync_run().last_started_at.clone(),
-                                last_completed_at: Some(now_label()),
-                                last_summary: Some(run_summary.clone()),
-                                last_error: None,
-                            });
+                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
                             history_message.set(format_backfill_message(
                                 format!(
                                     "Retry to {} complete: {} uploaded, {} duplicates, {} cached, {} failed",
@@ -212,13 +180,7 @@ fn App() -> Element {
                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }
                         Err(error) => {
-                            sync_run.set(SyncRunState {
-                                running: false,
-                                last_started_at: sync_run().last_started_at.clone(),
-                                last_completed_at: Some(now_label()),
-                                last_summary: sync_run().last_summary.clone(),
-                                last_error: Some(error.clone()),
-                            });
+                            sync_run.set(sync_run().failed(now_label(), error.clone()));
                             history_message.set(error);
                         }
                     }
@@ -281,26 +243,13 @@ fn App() -> Element {
                             },
                             onbackfill: move |_| {
                                 backfill_running.set(true);
-                                let started_at = now_label();
-                                sync_run.set(SyncRunState {
-                                    running: true,
-                                    last_started_at: Some(started_at),
-                                    last_completed_at: sync_run().last_completed_at.clone(),
-                                    last_summary: sync_run().last_summary.clone(),
-                                    last_error: None,
-                                });
+                                sync_run.set(sync_run().started(now_label()));
                                 history_message.set("Backfilling upload destinations from current RL API history".to_string());
                                 spawn(async move {
                                     match backfill_upload_destinations().await {
                                         Ok(run_summary) => {
                                             failed_uploads.set(dedupe_upload_requests(run_summary.failed_uploads.clone()));
-                                            sync_run.set(SyncRunState {
-                                                running: false,
-                                                last_started_at: sync_run().last_started_at.clone(),
-                                                last_completed_at: Some(now_label()),
-                                                last_summary: Some(run_summary.clone()),
-                                                last_error: None,
-                                            });
+                                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
                                             history_message.set(format_backfill_message(
                                                 format!(
                                                 "Backfill complete: {} uploaded, {} duplicates, {} cached, {} failed",
@@ -314,13 +263,7 @@ fn App() -> Element {
                                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                         }
                                         Err(error) => {
-                                            sync_run.set(SyncRunState {
-                                                running: false,
-                                                last_started_at: sync_run().last_started_at.clone(),
-                                                last_completed_at: Some(now_label()),
-                                                last_summary: sync_run().last_summary.clone(),
-                                                last_error: Some(error.clone()),
-                                            });
+                                            sync_run.set(sync_run().failed(now_label(), error.clone()));
                                             history_message.set(error);
                                         }
                                     }
@@ -329,14 +272,7 @@ fn App() -> Element {
                             },
                             onupload: move |request: ReplayUploadRequest| {
                                 uploading_replay.set(Some(request.clone()));
-                                let started_at = now_label();
-                                sync_run.set(SyncRunState {
-                                    running: true,
-                                    last_started_at: Some(started_at),
-                                    last_completed_at: sync_run().last_completed_at.clone(),
-                                    last_summary: sync_run().last_summary.clone(),
-                                    last_error: None,
-                                });
+                                sync_run.set(sync_run().started(now_label()));
                                 history_message.set(format!(
                                     "Uploading {} to {}",
                                     short_match_id(&request.match_id),
@@ -351,13 +287,7 @@ fn App() -> Element {
                                                 upsert_failed_upload(&mut failures, failure.clone());
                                             }
                                             failed_uploads.set(failures);
-                                            sync_run.set(SyncRunState {
-                                                running: false,
-                                                last_started_at: sync_run().last_started_at.clone(),
-                                                last_completed_at: Some(now_label()),
-                                                last_summary: Some(run_summary.clone()),
-                                                last_error: None,
-                                            });
+                                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
                                             history_message.set(format_backfill_message(
                                                 format!(
                                                 "Upload to {} complete: {} uploaded, {} duplicates, {} cached, {} failed",
@@ -372,13 +302,7 @@ fn App() -> Element {
                                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                         }
                                         Err(error) => {
-                                            sync_run.set(SyncRunState {
-                                                running: false,
-                                                last_started_at: sync_run().last_started_at.clone(),
-                                                last_completed_at: Some(now_label()),
-                                                last_summary: sync_run().last_summary.clone(),
-                                                last_error: Some(error.clone()),
-                                            });
+                                            sync_run.set(sync_run().failed(now_label(), error.clone()));
                                             history_message.set(error);
                                         }
                                     }

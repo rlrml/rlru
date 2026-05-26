@@ -9,6 +9,8 @@ pub use psynet::PlayerPlatform;
 use serde::{Deserialize, Deserializer, Serialize};
 use url::Url;
 
+use crate::state_file::write_atomically;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -58,11 +60,7 @@ impl Config {
 
     pub fn save(&self, path: &Path) -> Result<()> {
         self.validate()?;
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        fs::write(path, self.to_pretty_toml()?)
+        write_atomically(path, self.to_pretty_toml()?)
             .with_context(|| format!("failed to write config {}", path.display()))
     }
 

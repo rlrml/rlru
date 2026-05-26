@@ -1,9 +1,8 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
 use reqwest::header::{AUTHORIZATION, LOCATION};
@@ -11,10 +10,10 @@ use reqwest::StatusCode;
 use serde_json::Value;
 
 use crate::config::UploadDestinationConfig;
+use crate::state_file::write_atomically;
 
 const HISTORY_PER_ACCOUNT: usize = 20;
 const MAX_CACHE_SIZE_FACTOR: usize = 2;
-static CACHE_SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct ReplayUploader {
@@ -259,32 +258,13 @@ impl UploadCache {
     }
 
     pub fn save(&self) -> Result<()> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create {}", parent.display()))?;
-        }
-        let temp_path = upload_cache_temp_path(&self.path);
-        let mut file = fs::File::create(&temp_path).with_context(|| {
-            format!(
-                "failed to write upload cache temp file {}",
-                temp_path.display()
-            )
-        })?;
+        let mut content = String::new();
         for item in &self.items {
-            writeln!(file, "{}", item.serialize())?;
+            content.push_str(&item.serialize());
+            content.push('\n');
         }
-        file.flush()?;
-        file.sync_all()?;
-        drop(file);
-
-        replace_file(&temp_path, &self.path).with_context(|| {
-            format!(
-                "failed to replace upload cache {} with {}",
-                self.path.display(),
-                temp_path.display()
-            )
-        })?;
-        Ok(())
+        write_atomically(&self.path, content)
+            .with_context(|| format!("failed to write upload cache {}", self.path.display()))
     }
 
     fn ensure_capacity(&mut self) {
@@ -294,33 +274,6 @@ impl UploadCache {
                 self.index.remove(&oldest.replay_id);
             }
         }
-    }
-}
-
-fn upload_cache_temp_path(path: &Path) -> PathBuf {
-    let sequence = CACHE_SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let file_name = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("upload-cache");
-    path.with_file_name(format!(
-        ".{file_name}.{}.{}.part",
-        std::process::id(),
-        sequence
-    ))
-}
-
-fn replace_file(from: &Path, to: &Path) -> Result<()> {
-    match fs::rename(from, to) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            fs::remove_file(to)
-                .with_context(|| format!("failed to remove old file {}", to.display()))?;
-            fs::rename(from, to)
-                .with_context(|| format!("failed to move {} to {}", from.display(), to.display()))
-        }
-        Err(error) => Err(error)
-            .with_context(|| format!("failed to move {} to {}", from.display(), to.display())),
     }
 }
 

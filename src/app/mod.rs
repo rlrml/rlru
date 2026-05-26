@@ -1,115 +1,17 @@
 use std::time::Duration;
 
-use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform, TargetAuth};
+mod format;
+mod model;
+
+pub use format::*;
+pub use model::*;
+
+use format::{auth_label, format_record_start_timestamp, platform_label};
+
+use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform};
 use crate::paths::AppPaths;
 use crate::sync::{SyncOptions, SyncService};
 use crate::Config;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AppSummary {
-    pub config_path: String,
-    pub accounts: Vec<AccountSummary>,
-    pub upload_destinations: Vec<UploadDestinationSummary>,
-    pub auto_upload: bool,
-    pub upload_on_launch: bool,
-    pub no_upload_while_connected: bool,
-    pub selected_account: Option<String>,
-    pub selected_upload_destination: Option<String>,
-    pub auto_upload_interval_minutes: u64,
-    pub auto_upload_jitter_minutes: u64,
-    pub interval: String,
-    pub jitter: String,
-    pub status: String,
-}
-
-impl AppSummary {
-    pub fn account_count(&self) -> usize {
-        self.accounts.len()
-    }
-
-    pub fn upload_destination_count(&self) -> usize {
-        self.upload_destinations.len()
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct AccountSummary {
-    pub id: u32,
-    pub name: String,
-    pub platform: String,
-    pub sync_enabled: bool,
-    pub selected: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AccountFormData {
-    pub name: String,
-    pub platform: String,
-    pub sync_enabled: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OverviewConfigFormData {
-    pub auto_upload_interval_minutes: String,
-    pub auto_upload_jitter_minutes: String,
-    pub upload_on_launch: bool,
-    pub no_upload_while_connected: bool,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct UploadDestinationSummary {
-    pub name: String,
-    pub url: String,
-    pub upload_enabled: bool,
-    pub automatic: bool,
-    pub auth: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryRow {
-    pub account: String,
-    pub match_id: String,
-    pub timestamp: String,
-    pub map_name: String,
-    pub playlist: String,
-    pub score: String,
-    pub upload_destinations: Vec<HistoryUploadDestination>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HistoryUploadDestination {
-    pub target_name: String,
-    pub state: String,
-    pub uploaded: bool,
-    pub upload_enabled: bool,
-    pub location: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReplayUploadRequest {
-    pub target_name: String,
-    pub match_id: String,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct SyncRunState {
-    pub running: bool,
-    pub last_started_at: Option<String>,
-    pub last_completed_at: Option<String>,
-    pub last_summary: Option<BackfillSummary>,
-    pub last_error: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BackfillSummary {
-    pub uploaded: usize,
-    pub duplicates: usize,
-    pub cached: usize,
-    pub failed: usize,
-    pub failed_match_ids: Vec<String>,
-    pub failed_uploads: Vec<ReplayUploadRequest>,
-}
 
 struct AppContext {
     paths: AppPaths,
@@ -274,7 +176,7 @@ pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
         .await
         .map_err(|error| error.to_string())?;
 
-    Ok(backfill_summary_from_sync_summary(summary))
+    Ok(summary.into())
 }
 
 pub async fn upload_history_replay(
@@ -295,7 +197,7 @@ pub async fn upload_history_replay(
         return Err("No matching replay was found in current RL API history".to_string());
     }
 
-    Ok(backfill_summary_from_sync_summary(summary))
+    Ok(summary.into())
 }
 
 pub fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
@@ -370,143 +272,6 @@ pub fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary,
     })
 }
 
-pub fn short_match_id(match_id: &str) -> &str {
-    match_id.get(..8).unwrap_or(match_id)
-}
-
-pub fn now_label() -> String {
-    chrono::Local::now()
-        .format("%Y-%m-%d %H:%M:%S %Z")
-        .to_string()
-}
-
-pub fn format_backfill_message(message: String, failed_uploads: &[ReplayUploadRequest]) -> String {
-    if failed_uploads.is_empty() {
-        message
-    } else {
-        let suffix = if failed_uploads.len() == 1 {
-            String::new()
-        } else {
-            format!("; {} total blocked/failed uploads", failed_uploads.len())
-        };
-        format!(
-            "{message}; first issue: {}{suffix}",
-            format_failed_upload(&failed_uploads[0])
-        )
-    }
-}
-
-pub fn dedupe_upload_requests(requests: Vec<ReplayUploadRequest>) -> Vec<ReplayUploadRequest> {
-    let mut deduped = Vec::new();
-    for request in requests {
-        upsert_failed_upload(&mut deduped, request);
-    }
-    deduped
-}
-
-pub fn upsert_failed_upload(
-    failed_uploads: &mut Vec<ReplayUploadRequest>,
-    request: ReplayUploadRequest,
-) {
-    if let Some(existing) = failed_uploads
-        .iter_mut()
-        .find(|failure| is_same_upload_request(failure, &request))
-    {
-        *existing = request;
-    } else {
-        failed_uploads.push(request);
-    }
-}
-
-pub fn is_same_upload_request(left: &ReplayUploadRequest, right: &ReplayUploadRequest) -> bool {
-    is_same_upload(left, &right.target_name, &right.match_id)
-}
-
-pub fn is_same_upload(request: &ReplayUploadRequest, target_name: &str, match_id: &str) -> bool {
-    request.target_name == target_name && request.match_id == match_id
-}
-
-pub fn failed_upload<'a>(
-    failed_uploads: &'a [ReplayUploadRequest],
-    target_name: &str,
-    match_id: &str,
-) -> Option<&'a ReplayUploadRequest> {
-    failed_uploads
-        .iter()
-        .find(|failure| is_same_upload(failure, target_name, match_id))
-}
-
-pub fn upload_failure_reason(
-    failed_uploads: &[ReplayUploadRequest],
-    target_name: &str,
-    match_id: &str,
-) -> String {
-    failed_upload(failed_uploads, target_name, match_id)
-        .and_then(|failure| failure.reason.clone())
-        .unwrap_or_default()
-}
-
-pub fn format_failed_upload(failure: &ReplayUploadRequest) -> String {
-    let base = format!(
-        "{} to {}",
-        short_match_id(&failure.match_id),
-        failure.target_name
-    );
-    match &failure.reason {
-        Some(reason) => format!("{base}: {reason}"),
-        None => base,
-    }
-}
-
-pub fn format_failed_upload_retry_label(failure: &ReplayUploadRequest) -> String {
-    format!("Retry {}", format_failed_upload(failure))
-}
-
-pub fn auto_upload_label(summary: &AppSummary) -> &'static str {
-    if summary.auto_upload {
-        "enabled"
-    } else {
-        "disabled"
-    }
-}
-
-pub fn tray_sync_label(sync_run: &SyncRunState) -> String {
-    if sync_run.running {
-        return sync_run
-            .last_started_at
-            .as_ref()
-            .map(|started| format!("Sync running since {started}"))
-            .unwrap_or_else(|| "Sync running".to_string());
-    }
-
-    if let Some(error) = &sync_run.last_error {
-        return sync_run
-            .last_completed_at
-            .as_ref()
-            .map(|completed| format!("Last sync failed at {completed}: {error}"))
-            .unwrap_or_else(|| format!("Last sync failed: {error}"));
-    }
-
-    match (&sync_run.last_completed_at, &sync_run.last_summary) {
-        (Some(completed), Some(summary)) => format!(
-            "Last sync {completed}: {} uploaded, {} duplicate, {} cached, {} failed",
-            summary.uploaded, summary.duplicates, summary.cached, summary.failed
-        ),
-        (Some(completed), None) => format!("Last sync {completed}"),
-        _ => "No sync run yet".to_string(),
-    }
-}
-
-pub fn tray_tooltip(summary: &AppSummary, sync_run: &SyncRunState, failed_count: usize) -> String {
-    format!(
-        "rlru\n{}\nAuto upload: {}, {}\nFailed uploads: {}",
-        tray_sync_label(sync_run),
-        auto_upload_label(summary),
-        summary.interval,
-        failed_count
-    )
-}
-
 fn update_config(
     mut update: impl FnMut(&mut Config) -> Result<(), String>,
 ) -> Result<AppSummary, String> {
@@ -547,64 +312,6 @@ fn parse_minutes(label: &str, value: &str, minimum: Option<u64>) -> Result<u64, 
     }
 
     Ok(minutes)
-}
-
-fn platform_label(platform: &PlayerPlatform) -> &'static str {
-    match platform {
-        PlayerPlatform::Epic => "Epic",
-        PlayerPlatform::Steam => "Steam",
-        PlayerPlatform::PlayStation => "PlayStation",
-        PlayerPlatform::Xbox => "Xbox",
-        PlayerPlatform::Nintendo => "Nintendo",
-    }
-}
-
-fn auth_label(auth: &TargetAuth) -> String {
-    match auth {
-        TargetAuth::None => "No auth".to_string(),
-        TargetAuth::AuthorizationHeader { .. } => "Authorization header".to_string(),
-        TargetAuth::Bearer { .. } => "Bearer token".to_string(),
-        TargetAuth::BearerEnv { variable } => {
-            if std::env::var_os(variable).is_some() {
-                format!("Bearer env token ({variable})")
-            } else {
-                format!("Bearer env token missing ({variable})")
-            }
-        }
-        TargetAuth::BearerCommand { command } => command
-            .first()
-            .map(|program| format!("Bearer command token ({program})"))
-            .unwrap_or_else(|| "Bearer command token missing command".to_string()),
-    }
-}
-
-fn format_record_start_timestamp(timestamp: i64) -> String {
-    use chrono::TimeZone;
-
-    chrono::Local
-        .timestamp_opt(timestamp, 0)
-        .single()
-        .map(|datetime| datetime.format("%Y-%m-%d %H:%M:%S %Z").to_string())
-        .unwrap_or_else(|| timestamp.to_string())
-}
-
-fn backfill_summary_from_sync_summary(summary: crate::sync::SyncSummary) -> BackfillSummary {
-    BackfillSummary {
-        uploaded: summary.uploaded,
-        duplicates: summary.duplicates,
-        cached: summary.cached,
-        failed: summary.failed,
-        failed_match_ids: summary.failed_match_ids,
-        failed_uploads: summary
-            .failed_uploads
-            .into_iter()
-            .map(|failed| ReplayUploadRequest {
-                target_name: failed.target_name,
-                match_id: failed.match_id,
-                reason: Some(failed.reason),
-            })
-            .collect(),
-    }
 }
 
 #[cfg(test)]
@@ -651,5 +358,62 @@ mod tests {
             message,
             "Backfill complete: 0 uploaded, 0 duplicates, 0 cached, 1 failed; first issue: 12345678 to Rocket Sense: token missing"
         );
+    }
+
+    #[test]
+    fn sync_run_state_transitions_preserve_previous_context() {
+        let previous = SyncRunState {
+            running: false,
+            last_started_at: Some("old-start".to_string()),
+            last_completed_at: Some("old-complete".to_string()),
+            last_summary: Some(BackfillSummary {
+                uploaded: 1,
+                duplicates: 2,
+                cached: 3,
+                failed: 4,
+                failed_match_ids: vec!["old-match".to_string()],
+                failed_uploads: Vec::new(),
+            }),
+            last_error: Some("old-error".to_string()),
+        };
+
+        let running = previous.started("new-start".to_string());
+        assert!(running.running);
+        assert_eq!(running.last_started_at.as_deref(), Some("new-start"));
+        assert_eq!(running.last_completed_at.as_deref(), Some("old-complete"));
+        assert!(running.last_summary.is_some());
+        assert_eq!(running.last_error, None);
+
+        let completed = running.completed(
+            "new-complete".to_string(),
+            BackfillSummary {
+                uploaded: 5,
+                duplicates: 0,
+                cached: 0,
+                failed: 0,
+                failed_match_ids: Vec::new(),
+                failed_uploads: Vec::new(),
+            },
+        );
+        assert!(!completed.running);
+        assert_eq!(completed.last_started_at.as_deref(), Some("new-start"));
+        assert_eq!(completed.last_completed_at.as_deref(), Some("new-complete"));
+        assert_eq!(
+            completed
+                .last_summary
+                .as_ref()
+                .map(|summary| summary.uploaded),
+            Some(5)
+        );
+        assert_eq!(completed.last_error, None);
+
+        let failed = completed.failed("failed-at".to_string(), "boom".to_string());
+        assert!(!failed.running);
+        assert_eq!(failed.last_completed_at.as_deref(), Some("failed-at"));
+        assert_eq!(
+            failed.last_summary.as_ref().map(|summary| summary.uploaded),
+            Some(5)
+        );
+        assert_eq!(failed.last_error.as_deref(), Some("boom"));
     }
 }

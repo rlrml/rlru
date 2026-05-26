@@ -122,6 +122,39 @@ pub(crate) struct SyncRunState {
 }
 
 #[cfg(target_arch = "wasm32")]
+impl SyncRunState {
+    pub(crate) fn started(&self, started_at: String) -> Self {
+        Self {
+            running: true,
+            last_started_at: Some(started_at),
+            last_completed_at: self.last_completed_at.clone(),
+            last_summary: self.last_summary.clone(),
+            last_error: None,
+        }
+    }
+
+    pub(crate) fn completed(&self, completed_at: String, summary: BackfillSummary) -> Self {
+        Self {
+            running: false,
+            last_started_at: self.last_started_at.clone(),
+            last_completed_at: Some(completed_at),
+            last_summary: Some(summary),
+            last_error: None,
+        }
+    }
+
+    pub(crate) fn failed(&self, completed_at: String, error: String) -> Self {
+        Self {
+            running: false,
+            last_started_at: self.last_started_at.clone(),
+            last_completed_at: Some(completed_at),
+            last_summary: self.last_summary.clone(),
+            last_error: Some(error),
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct BackfillSummary {
     pub(crate) uploaded: usize,

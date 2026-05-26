@@ -3,6 +3,7 @@ pub mod auth;
 pub mod config;
 pub mod daemon;
 pub mod paths;
+pub(crate) mod state_file;
 pub mod sync;
 pub mod upload;
 
