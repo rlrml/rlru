@@ -47,6 +47,26 @@ fn desktop_data_dir() -> std::path::PathBuf {
         .join("rlru-dioxus-webview")
 }
 
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn configure_linux_desktop_environment() {
+    if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        std::env::set_var("GDK_BACKEND", "x11");
+    }
+
+    glib::set_application_name("rlru");
+    if let Err(error) = gtk::init() {
+        eprintln!("Failed to initialize GTK before configuring rlru desktop identity: {error}");
+        return;
+    }
+
+    gdk::set_program_class(APP_ID);
+    gtk::Window::set_default_icon_name(APP_ID);
+}
+
+#[cfg(not(all(feature = "desktop", target_os = "linux")))]
+fn configure_linux_desktop_environment() {}
+
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -274,6 +294,8 @@ fn main() {
 #[cfg(feature = "desktop")]
 fn launch_app() {
     use dioxus::desktop::{icon_from_memory, Config, WindowBuilder, WindowCloseBehaviour};
+
+    configure_linux_desktop_environment();
 
     let windows = shared_desktop_windows();
     #[cfg(all(unix, not(any(target_os = "ios", target_os = "android"))))]

@@ -56,6 +56,8 @@
         muslPkgs = pkgs.pkgsCross.musl64;
         windowsTarget = "x86_64-pc-windows-gnu";
         mingwPkgs = pkgs.pkgsCross.mingwW64;
+        rlruDioxusAppId = "org.colonelpanic.rlru.dioxus";
+        rlruDioxusDesktopAlias = "rlru-dioxus";
         toolchain = fenixPkgs.combine [
           fenixPkgs.stable.cargo
           fenixPkgs.stable.clippy
@@ -235,23 +237,37 @@
               ];
               desktopItems = lib.optionals isLinux [
                 (pkgs.makeDesktopItem {
-                  name = "org.colonelpanic.rlru.dioxus";
+                  name = rlruDioxusAppId;
                   desktopName = "rlru";
                   genericName = "Rocket League replay uploader";
                   comment = "Upload Rocket League replay data";
                   exec = "rlru-dioxus";
-                  icon = "org.colonelpanic.rlru.dioxus";
+                  icon = rlruDioxusAppId;
                   terminal = false;
                   categories = ["Game" "Utility"];
                   startupNotify = true;
-                  startupWMClass = "org.colonelpanic.rlru.dioxus";
+                  startupWMClass = rlruDioxusAppId;
+                })
+                (pkgs.makeDesktopItem {
+                  name = rlruDioxusDesktopAlias;
+                  desktopName = "rlru";
+                  genericName = "Rocket League replay uploader";
+                  comment = "Upload Rocket League replay data";
+                  exec = "rlru-dioxus";
+                  icon = rlruDioxusDesktopAlias;
+                  terminal = false;
+                  categories = ["Game" "Utility"];
+                  startupNotify = true;
+                  startupWMClass = rlruDioxusDesktopAlias;
                 })
               ];
               postInstall = lib.optionalString isLinux ''
                 for size in 16 24 32 48 64 128 256 512 1024; do
-                  install -Dm644 \
-                    "crates/rlru-dioxus/assets/icons/rlru-icon-$size.png" \
-                    "$out/share/icons/hicolor/''${size}x''${size}/apps/org.colonelpanic.rlru.dioxus.png"
+                  for icon_name in ${rlruDioxusAppId} ${rlruDioxusDesktopAlias} rlru; do
+                    install -Dm644 \
+                      "crates/rlru-dioxus/assets/icons/rlru-icon-$size.png" \
+                      "$out/share/icons/hicolor/''${size}x''${size}/apps/$icon_name.png"
+                  done
                 done
               '';
               postFixup = lib.optionalString isLinux ''

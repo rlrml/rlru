@@ -4,3 +4,14 @@ name = "RlruDioxus"
 [bundle]
 identifier = "org.colonelpanic.rlru.dioxus"
 publisher = "Ivan Malison"
+icon = [
+  "assets/icons/rlru-icon-16.png",
+  "assets/icons/rlru-icon-24.png",
+  "assets/icons/rlru-icon-32.png",
+  "assets/icons/rlru-icon-48.png",
+  "assets/icons/rlru-icon-64.png",
+  "assets/icons/rlru-icon-128.png",
+  "assets/icons/rlru-icon-256.png",
+  "assets/icons/rlru-icon-512.png",
+  "assets/icons/rlru-icon-1024.png",
+]
