@@ -153,7 +153,7 @@ pub(crate) fn HistoryView(
     history: Option<Result<Vec<HistoryRow>, String>>,
     message: String,
     backfill_running: bool,
-    uploading: Option<ReplayUploadRequest>,
+    active_upload: Option<ActiveUpload>,
     failed_uploads: Vec<ReplayUploadRequest>,
     onrefresh: EventHandler<()>,
     onbackfill: EventHandler<()>,
@@ -221,73 +221,45 @@ pub(crate) fn HistoryView(
                                         for destination in row.upload_destinations {
                                             div { class: "store-status",
                                                 span { class: "store-name", "{destination.target_name}" }
-                                                if destination.uploaded {
-                                                    if let Some(location) = destination.location.clone() {
+                                                match history_upload_control(
+                                                    &destination,
+                                                    &row.match_id,
+                                                    active_upload.as_ref(),
+                                                    &failed_uploads,
+                                                ) {
+                                                    HistoryUploadControl::OpenLink { location } => rsx! {
                                                         a {
                                                             class: "state-pill uploaded",
                                                             href: "{location}",
                                                             target: "_blank",
                                                             "Open"
                                                         }
-                                                    } else if destination.upload_enabled {
+                                                    },
+                                                    HistoryUploadControl::Label { class_name, label } => rsx! {
+                                                        span {
+                                                            class: "{class_name}",
+                                                            "{label}"
+                                                        }
+                                                    },
+                                                    HistoryUploadControl::Button {
+                                                        class_name,
+                                                        label,
+                                                        title,
+                                                        disabled,
+                                                        request,
+                                                    } => rsx! {
                                                         button {
-                                                            class: "compact-button",
-                                                            title: "{upload_failure_reason(&failed_uploads, &destination.target_name, &row.match_id)}",
-                                                            disabled: uploading.is_some(),
-                                                            onclick: {
-                                                                let target_name = destination.target_name.clone();
-                                                                let match_id = row.match_id.clone();
-                                                                move |_| {
-                                                                    onupload.call(ReplayUploadRequest {
-                                                                        target_name: target_name.clone(),
-                                                                        match_id: match_id.clone(),
-                                                                        reason: None,
-                                                                    });
+                                                            class: "{class_name}",
+                                                            title: "{title}",
+                                                            disabled,
+                                                            onclick: move |_| {
+                                                                if !disabled {
+                                                                    onupload.call(request.clone());
                                                                 }
                                                             },
-                                                            if uploading.as_ref().is_some_and(|request| is_same_upload(request, &destination.target_name, &row.match_id)) {
-                                                                "Trying upload"
-                                                            } else if failed_upload(&failed_uploads, &destination.target_name, &row.match_id).is_some() {
-                                                                "Retry upload"
-                                                            } else {
-                                                                "Get link"
-                                                            }
+                                                            "{label}"
                                                         }
-                                                    } else {
-                                                        span {
-                                                            class: "state-pill uploaded",
-                                                            "{destination.state}"
-                                                        }
-                                                    }
-                                                } else if !destination.upload_enabled {
-                                                    span {
-                                                        class: "state-pill missing",
-                                                        "{destination.state}"
-                                                    }
-                                                } else {
-                                                    button {
-                                                        class: "compact-button",
-                                                        title: "{upload_failure_reason(&failed_uploads, &destination.target_name, &row.match_id)}",
-                                                        disabled: uploading.is_some(),
-                                                        onclick: {
-                                                            let target_name = destination.target_name.clone();
-                                                            let match_id = row.match_id.clone();
-                                                            move |_| {
-                                                                onupload.call(ReplayUploadRequest {
-                                                                    target_name: target_name.clone(),
-                                                                    match_id: match_id.clone(),
-                                                                    reason: None,
-                                                                });
-                                                            }
-                                                        },
-                                                        if uploading.as_ref().is_some_and(|request| is_same_upload(request, &destination.target_name, &row.match_id)) {
-                                                            "Uploading"
-                                                        } else if failed_upload(&failed_uploads, &destination.target_name, &row.match_id).is_some() {
-                                                            "Retry"
-                                                        } else {
-                                                            "Upload"
-                                                        }
-                                                    }
+                                                    },
                                                 }
                                             }
                                         }

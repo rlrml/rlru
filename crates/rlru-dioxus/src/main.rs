@@ -78,7 +78,7 @@ fn App() -> Element {
     let mut action_message = use_signal(String::new);
     let mut history_message = use_signal(String::new);
     let mut backfill_running = use_signal(|| false);
-    let mut uploading_replay = use_signal(|| None::<ReplayUploadRequest>);
+    let mut active_upload = use_signal(|| None::<ActiveUpload>);
     let mut sync_run = use_signal(SyncRunState::default);
     let mut failed_uploads = use_signal(Vec::<ReplayUploadRequest>::new);
     let active = active_view();
@@ -92,7 +92,7 @@ fn App() -> Element {
     };
     let history_status = history_message();
     let is_backfill_running = backfill_running();
-    let current_uploading_replay = uploading_replay();
+    let current_active_upload = active_upload();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
 
@@ -149,14 +149,20 @@ fn App() -> Element {
                 history_message.set(String::new());
             },
             onretry: move |request: ReplayUploadRequest| {
-                uploading_replay.set(Some(request.clone()));
+                active_upload.set(Some(ActiveUpload::pending(request.clone())));
                 sync_run.set(sync_run().started(now_label()));
                 history_message.set(format!(
-                    "Retrying {} to {}",
+                    "Pending retry for {} to {}",
                     short_match_id(&request.match_id),
                     request.target_name
                 ));
                 spawn(async move {
+                    active_upload.set(Some(ActiveUpload::uploading(request.clone())));
+                    history_message.set(format!(
+                        "Retrying {} to {}",
+                        short_match_id(&request.match_id),
+                        request.target_name
+                    ));
                     match upload_history_replay(request.clone()).await {
                         Ok(run_summary) => {
                             let mut failures = failed_uploads();
@@ -184,7 +190,7 @@ fn App() -> Element {
                             history_message.set(error);
                         }
                     }
-                    uploading_replay.set(None);
+                    active_upload.set(None);
                 });
             },
         }
@@ -234,7 +240,7 @@ fn App() -> Element {
                             history: current_history,
                             message: history_status,
                             backfill_running: is_backfill_running,
-                            uploading: current_uploading_replay,
+                            active_upload: current_active_upload,
                             failed_uploads: current_failed_uploads,
                             onrefresh: move |_| {
                                 history_requested.set(true);
@@ -271,14 +277,20 @@ fn App() -> Element {
                                 });
                             },
                             onupload: move |request: ReplayUploadRequest| {
-                                uploading_replay.set(Some(request.clone()));
+                                active_upload.set(Some(ActiveUpload::pending(request.clone())));
                                 sync_run.set(sync_run().started(now_label()));
                                 history_message.set(format!(
-                                    "Uploading {} to {}",
+                                    "Pending upload for {} to {}",
                                     short_match_id(&request.match_id),
                                     request.target_name
                                 ));
                                 spawn(async move {
+                                    active_upload.set(Some(ActiveUpload::uploading(request.clone())));
+                                    history_message.set(format!(
+                                        "Uploading {} to {}",
+                                        short_match_id(&request.match_id),
+                                        request.target_name
+                                    ));
                                     match upload_history_replay(request.clone()).await {
                                         Ok(run_summary) => {
                                             let mut failures = failed_uploads();
@@ -306,7 +318,7 @@ fn App() -> Element {
                                             history_message.set(error);
                                         }
                                     }
-                                    uploading_replay.set(None);
+                                    active_upload.set(None);
                                 });
                             },
                         }

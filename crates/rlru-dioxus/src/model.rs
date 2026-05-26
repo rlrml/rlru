@@ -4,7 +4,8 @@ pub(crate) use rlru::app::{
     format_backfill_message, is_same_upload, is_same_upload_request, load_history, load_summary,
     now_label, remove_account, save_auto_upload, save_overview_config, short_match_id,
     upload_failure_reason, upload_history_replay, upsert_failed_upload, AccountFormData,
-    AppSummary, HistoryRow, OverviewConfigFormData, ReplayUploadRequest, SyncRunState,
+    AppSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
+    SyncRunState,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -14,6 +15,144 @@ pub(crate) use rlru::app::{
 pub(crate) use rlru::app::{
     auto_upload_label, format_failed_upload_retry_label, tray_sync_label, tray_tooltip,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum UploadPhase {
+    Pending,
+    Uploading,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ActiveUpload {
+    pub(crate) request: ReplayUploadRequest,
+    pub(crate) phase: UploadPhase,
+}
+
+impl ActiveUpload {
+    pub(crate) fn pending(request: ReplayUploadRequest) -> Self {
+        Self {
+            request,
+            phase: UploadPhase::Pending,
+        }
+    }
+
+    pub(crate) fn uploading(request: ReplayUploadRequest) -> Self {
+        Self {
+            request,
+            phase: UploadPhase::Uploading,
+        }
+    }
+
+    fn is_for(&self, target_name: &str, match_id: &str) -> bool {
+        is_same_upload(&self.request, target_name, match_id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum HistoryUploadControl {
+    OpenLink {
+        location: String,
+    },
+    Label {
+        class_name: &'static str,
+        label: String,
+    },
+    Button {
+        class_name: &'static str,
+        label: &'static str,
+        title: String,
+        disabled: bool,
+        request: ReplayUploadRequest,
+    },
+}
+
+pub(crate) fn history_upload_control(
+    destination: &HistoryUploadDestination,
+    match_id: &str,
+    active_upload: Option<&ActiveUpload>,
+    failed_uploads: &[ReplayUploadRequest],
+) -> HistoryUploadControl {
+    if destination.uploaded {
+        if let Some(location) = destination.location.clone() {
+            return HistoryUploadControl::OpenLink { location };
+        }
+
+        if !destination.upload_enabled {
+            return HistoryUploadControl::Label {
+                class_name: "state-pill uploaded",
+                label: destination.state.clone(),
+            };
+        }
+    } else if !destination.upload_enabled {
+        return HistoryUploadControl::Label {
+            class_name: "state-pill missing",
+            label: destination.state.clone(),
+        };
+    }
+
+    let active_state = active_upload
+        .filter(|upload| upload.is_for(&destination.target_name, match_id))
+        .map(|upload| &upload.phase);
+    let has_failed = failed_upload(failed_uploads, &destination.target_name, match_id).is_some();
+    let label = upload_button_label(destination.uploaded, active_state, has_failed);
+    let class_name = upload_button_class(active_state);
+    let title = upload_button_title(
+        active_state,
+        failed_uploads,
+        &destination.target_name,
+        match_id,
+    );
+
+    HistoryUploadControl::Button {
+        class_name,
+        label,
+        title,
+        disabled: active_upload.is_some(),
+        request: ReplayUploadRequest {
+            target_name: destination.target_name.clone(),
+            match_id: match_id.to_string(),
+            reason: None,
+        },
+    }
+}
+
+fn upload_button_label(
+    uploaded_without_location: bool,
+    active_state: Option<&UploadPhase>,
+    has_failed: bool,
+) -> &'static str {
+    match (uploaded_without_location, active_state, has_failed) {
+        (true, Some(UploadPhase::Pending), _) => "Pending link",
+        (true, Some(UploadPhase::Uploading), _) => "Getting link",
+        (true, None, true) => "Retry link",
+        (true, None, false) => "Get link",
+        (false, Some(UploadPhase::Pending), _) => "Pending upload",
+        (false, Some(UploadPhase::Uploading), _) => "Uploading",
+        (false, None, true) => "Retry upload",
+        (false, None, false) => "Upload",
+    }
+}
+
+fn upload_button_class(active_state: Option<&UploadPhase>) -> &'static str {
+    match active_state {
+        Some(UploadPhase::Pending) => "compact-button upload-pending",
+        Some(UploadPhase::Uploading) => "compact-button upload-running",
+        None => "compact-button",
+    }
+}
+
+fn upload_button_title(
+    active_state: Option<&UploadPhase>,
+    failed_uploads: &[ReplayUploadRequest],
+    target_name: &str,
+    match_id: &str,
+) -> String {
+    match active_state {
+        Some(UploadPhase::Pending) => "Upload request is queued".to_string(),
+        Some(UploadPhase::Uploading) => "Upload is in progress".to_string(),
+        None => upload_failure_reason(failed_uploads, target_name, match_id),
+    }
+}
 
 #[cfg(target_arch = "wasm32")]
 #[derive(Clone, Debug, PartialEq)]
@@ -438,4 +577,91 @@ pub(crate) fn save_overview_config(input: OverviewConfigFormData) -> Result<AppS
     summary.interval = format!("Every {interval_minutes} minutes");
     summary.jitter = format!("{jitter_minutes} minutes");
     Ok(summary)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MATCH_ID: &str = "4E8409F8A8F4431DBF2412B30F2461B5";
+    const TARGET_NAME: &str = "Rocket Sense";
+
+    fn destination(uploaded: bool) -> HistoryUploadDestination {
+        HistoryUploadDestination {
+            target_name: TARGET_NAME.to_string(),
+            state: if uploaded {
+                "Uploaded".to_string()
+            } else {
+                "Not uploaded".to_string()
+            },
+            uploaded,
+            upload_enabled: true,
+            location: None,
+        }
+    }
+
+    fn request() -> ReplayUploadRequest {
+        ReplayUploadRequest {
+            target_name: TARGET_NAME.to_string(),
+            match_id: MATCH_ID.to_string(),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn pending_upload_has_distinct_button_state() {
+        let active_upload = ActiveUpload::pending(request());
+
+        let control =
+            history_upload_control(&destination(false), MATCH_ID, Some(&active_upload), &[]);
+
+        assert_eq!(
+            control,
+            HistoryUploadControl::Button {
+                class_name: "compact-button upload-pending",
+                label: "Pending upload",
+                title: "Upload request is queued".to_string(),
+                disabled: true,
+                request: request(),
+            }
+        );
+    }
+
+    #[test]
+    fn running_upload_has_distinct_button_state() {
+        let active_upload = ActiveUpload::uploading(request());
+
+        let control =
+            history_upload_control(&destination(false), MATCH_ID, Some(&active_upload), &[]);
+
+        assert_eq!(
+            control,
+            HistoryUploadControl::Button {
+                class_name: "compact-button upload-running",
+                label: "Uploading",
+                title: "Upload is in progress".to_string(),
+                disabled: true,
+                request: request(),
+            }
+        );
+    }
+
+    #[test]
+    fn uploaded_without_location_uses_link_specific_labels() {
+        let active_upload = ActiveUpload::pending(request());
+
+        let control =
+            history_upload_control(&destination(true), MATCH_ID, Some(&active_upload), &[]);
+
+        assert_eq!(
+            control,
+            HistoryUploadControl::Button {
+                class_name: "compact-button upload-pending",
+                label: "Pending link",
+                title: "Upload request is queued".to_string(),
+                disabled: true,
+                request: request(),
+            }
+        );
+    }
 }

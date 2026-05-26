@@ -533,6 +533,22 @@ a.state-pill {
   opacity: 0.58;
 }
 
+.compact-button.upload-pending,
+.compact-button.upload-pending:disabled {
+  background: #fff6d8;
+  border-color: #d7b953;
+  color: #725b12;
+  opacity: 1;
+}
+
+.compact-button.upload-running,
+.compact-button.upload-running:disabled {
+  background: #e2f4ec;
+  border-color: #7bc2a1;
+  color: #1f6849;
+  opacity: 1;
+}
+
 .empty-state {
   color: #60727c;
   margin: 0;
