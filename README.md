@@ -2,8 +2,18 @@
 
 Rust-first Rocket League replay uploader.
 
-This is a reboot of Rockpload with stricter TOML configuration, explicit local
-state paths, testable auth/upload boundaries, and a Dioxus client scaffold.
+rlru uses strict TOML configuration, explicit local state paths, testable
+auth/upload boundaries, and a Dioxus client scaffold.
+
+## Screenshots
+
+![Overview](docs/screenshots/overview.png)
+
+![History](docs/screenshots/history.png)
+
+![Accounts](docs/screenshots/accounts.png)
+
+![Upload Destinations](docs/screenshots/upload-destinations.png)
 
 ## Development
 
