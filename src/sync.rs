@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use secrecy::ExposeSecret;
@@ -8,10 +9,12 @@ use tokio::io::AsyncWriteExt;
 
 use crate::auth::AuthManager;
 use crate::auth::EosTokenResponse;
-use crate::config::{AccountConfig, Config};
+use crate::config::{AccountConfig, Config, UploadDestinationConfig};
 use crate::paths::AppPaths;
 use crate::psynet::{MatchEntry, PlayerId, PsyNetClient};
 use crate::upload::{ReplayUploader, UploadCache, UploadOutcome};
+
+static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncSummary {
@@ -286,86 +289,86 @@ impl SyncService {
             ..SyncSummary::default()
         };
         let requested_match_ids = normalized_match_ids(&options.match_ids);
+        let mut targets = self.upload_target_states(options.target_name.as_deref())?;
 
-        for target in self.upload_destinations(options.target_name.as_deref())? {
-            if !target.replay_upload.enabled {
-                summary.skipped += summary.matches_seen;
+        for replay in &matches {
+            let match_id = &replay.match_info.match_guid;
+            if !requested_match_ids.is_empty()
+                && !requested_match_ids.contains(&normalize_match_id(match_id))
+            {
                 continue;
             }
 
-            let mut cache = UploadCache::load(
-                self.paths.upload_cache_path(&target.name),
-                self.config.accounts.len(),
-            )?;
-
-            if let Err(error) = target.auth.header_value() {
-                let reason = error.to_string();
-                for replay in &matches {
-                    let match_id = &replay.match_info.match_guid;
-                    if !requested_match_ids.is_empty()
-                        && !requested_match_ids.contains(&normalize_match_id(match_id))
-                    {
-                        continue;
-                    }
-                    if !options.force && cache.contains(match_id) {
-                        summary.cached += 1;
-                        continue;
-                    }
-                    record_failed_upload(
-                        &mut summary,
-                        &target.name,
-                        match_id,
-                        upload_auth_unavailable_reason(&target.name, &reason),
-                    );
-                }
-                tracing::warn!(
-                    %reason,
-                    target = %target.name,
-                    "skipping replay uploads because upload auth is unavailable"
-                );
-                continue;
-            }
-
-            for replay in &matches {
-                let match_id = &replay.match_info.match_guid;
-                if !requested_match_ids.is_empty()
-                    && !requested_match_ids.contains(&normalize_match_id(match_id))
-                {
+            let mut pending_target_indexes = Vec::new();
+            for (index, target) in targets.iter_mut().enumerate() {
+                if !target.config.replay_upload.enabled {
+                    summary.skipped += 1;
                     continue;
                 }
-                if !options.force && cache.contains(match_id) {
+
+                if !options.force && target.cache.contains(match_id) {
                     summary.cached += 1;
                     continue;
                 }
 
-                let replay_path = match self.download_replay(replay).await {
-                    Ok(path) => path,
-                    Err(error) => {
+                match &target.auth {
+                    UploadTargetAuth::Available(_) => pending_target_indexes.push(index),
+                    UploadTargetAuth::Unavailable(reason) => record_failed_upload(
+                        &mut summary,
+                        &target.config.name,
+                        match_id,
+                        upload_auth_unavailable_reason(&target.config.name, reason),
+                    ),
+                }
+            }
+
+            if pending_target_indexes.is_empty() {
+                continue;
+            }
+
+            let downloaded_replay = match self.download_replay(replay).await {
+                Ok(path) => path,
+                Err(error) => {
+                    for index in pending_target_indexes {
                         record_failed_upload(
                             &mut summary,
-                            &target.name,
+                            &targets[index].config.name,
                             match_id,
                             format!("download failed: {}", error_chain(&error)),
                         );
-                        tracing::warn!(%error, match_id, "failed to download replay");
-                        continue;
                     }
-                };
+                    tracing::warn!(%error, match_id, "failed to download replay");
+                    continue;
+                }
+            };
 
+            for index in pending_target_indexes {
+                let target = &mut targets[index];
+                let UploadTargetAuth::Available(auth_header) = &target.auth else {
+                    continue;
+                };
                 let result = self
                     .uploader
-                    .upload_replay_with_match_id(target, &replay_path, Some(match_id))
+                    .upload_replay_with_auth_header(
+                        target.config,
+                        downloaded_replay.path(),
+                        Some(match_id),
+                        auth_header.clone(),
+                    )
                     .await;
-                let _ = fs::remove_file(&replay_path).await;
 
                 match result {
                     Ok(result) if result.outcome == UploadOutcome::Uploaded => {
                         summary.uploaded += 1;
-                        cache.add_with_location(match_id.clone(), result.location)?;
+                        target
+                            .cache
+                            .add_with_location(match_id.clone(), result.location)?;
                     }
                     Ok(result) if result.outcome == UploadOutcome::Duplicate => {
                         summary.duplicates += 1;
-                        cache.add_with_location(match_id.clone(), result.location)?;
+                        target
+                            .cache
+                            .add_with_location(match_id.clone(), result.location)?;
                     }
                     Ok(_) => {
                         summary.skipped += 1;
@@ -373,14 +376,14 @@ impl SyncService {
                     Err(error) => {
                         record_failed_upload(
                             &mut summary,
-                            &target.name,
+                            &target.config.name,
                             match_id,
                             format!("upload failed: {}", error_chain(&error)),
                         );
                         tracing::warn!(
                             %error,
                             match_id,
-                            target = %target.name,
+                            target = %target.config.name,
                             "failed to upload replay"
                         );
                     }
@@ -389,6 +392,39 @@ impl SyncService {
         }
 
         Ok(summary)
+    }
+
+    fn upload_target_states(
+        &self,
+        target_name: Option<&str>,
+    ) -> Result<Vec<UploadTargetState<'_>>> {
+        self.upload_destinations(target_name)?
+            .into_iter()
+            .map(|target| {
+                let cache = UploadCache::load(
+                    self.paths.upload_cache_path(&target.name),
+                    self.config.accounts.len(),
+                )?;
+                let auth = match target.auth.header_value() {
+                    Ok(header) => UploadTargetAuth::Available(header),
+                    Err(error) => {
+                        let reason = error.to_string();
+                        tracing::warn!(
+                            %reason,
+                            target = %target.name,
+                            "skipping replay uploads because upload auth is unavailable"
+                        );
+                        UploadTargetAuth::Unavailable(reason)
+                    }
+                };
+
+                Ok(UploadTargetState {
+                    config: target,
+                    cache,
+                    auth,
+                })
+            })
+            .collect()
     }
 
     fn upload_destinations(
@@ -412,7 +448,7 @@ impl SyncService {
         }
     }
 
-    async fn download_replay(&self, replay: &MatchEntry) -> Result<PathBuf> {
+    async fn download_replay(&self, replay: &MatchEntry) -> Result<DownloadedReplay> {
         let response = self
             .http
             .get(&replay.replay_url)
@@ -429,14 +465,9 @@ impl SyncService {
             );
         }
 
-        let path = self
-            .paths
-            .cache_dir
-            .join(format!("{}.replay.part", replay.match_info.match_guid));
-        let final_path = self
-            .paths
-            .cache_dir
-            .join(format!("{}.replay", replay.match_info.match_guid));
+        let download_stem = unique_replay_download_stem(&replay.match_info.match_guid);
+        let path = self.paths.cache_dir.join(format!("{download_stem}.part"));
+        let final_path = self.paths.cache_dir.join(download_stem);
         let bytes = response
             .bytes()
             .await
@@ -454,7 +485,7 @@ impl SyncService {
                 final_path.display()
             )
         })?;
-        Ok(final_path)
+        Ok(DownloadedReplay::new(final_path))
     }
 }
 
@@ -493,6 +524,46 @@ struct AuthenticatedAccount<'a> {
     token: EosTokenResponse,
 }
 
+#[derive(Debug)]
+struct UploadTargetState<'a> {
+    config: &'a UploadDestinationConfig,
+    cache: UploadCache,
+    auth: UploadTargetAuth,
+}
+
+#[derive(Debug)]
+enum UploadTargetAuth {
+    Available(Option<String>),
+    Unavailable(String),
+}
+
+#[derive(Debug)]
+struct DownloadedReplay {
+    path: PathBuf,
+}
+
+impl DownloadedReplay {
+    fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for DownloadedReplay {
+    fn drop(&mut self) {
+        if let Err(error) = std::fs::remove_file(&self.path) {
+            tracing::debug!(
+                %error,
+                path = %self.path.display(),
+                "failed to remove downloaded replay cache file"
+            );
+        }
+    }
+}
+
 impl SyncSummary {
     fn merge(&mut self, other: Self) {
         self.accounts_seen += other.accounts_seen;
@@ -504,6 +575,33 @@ impl SyncSummary {
         self.failed += other.failed;
         self.failed_match_ids.extend(other.failed_match_ids);
         self.failed_uploads.extend(other.failed_uploads);
+    }
+}
+
+impl std::fmt::Display for SyncSummary {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(formatter, "accounts: {}", self.accounts_seen)?;
+        writeln!(formatter, "matches: {}", self.matches_seen)?;
+        writeln!(formatter, "uploaded: {}", self.uploaded)?;
+        writeln!(formatter, "duplicates: {}", self.duplicates)?;
+        writeln!(formatter, "cached: {}", self.cached)?;
+        writeln!(formatter, "skipped: {}", self.skipped)?;
+        writeln!(formatter, "failed: {}", self.failed)?;
+        if !self.failed_match_ids.is_empty() {
+            writeln!(
+                formatter,
+                "failed_match_ids: {}",
+                self.failed_match_ids.join(",")
+            )?;
+        }
+        for failure in &self.failed_uploads {
+            writeln!(
+                formatter,
+                "failed_upload: {} {}: {}",
+                failure.target_name, failure.match_id, failure.reason
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -529,4 +627,97 @@ fn normalized_match_ids(match_ids: &[String]) -> HashSet<String> {
 
 fn normalize_match_id(match_id: &str) -> String {
     match_id.trim().to_ascii_uppercase()
+}
+
+fn unique_replay_download_stem(match_id: &str) -> String {
+    let sequence = DOWNLOAD_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("{match_id}-{}-{sequence}.replay", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::psynet::Match;
+
+    #[test]
+    fn selected_match_count_matches_case_insensitively() {
+        let matches = vec![match_entry("ABC123"), match_entry("def456")];
+
+        assert_eq!(
+            selected_match_count(&matches, &[" abc123 ".to_string(), "DEF456".to_string()]),
+            2
+        );
+        assert_eq!(selected_match_count(&matches, &["missing".to_string()]), 0);
+    }
+
+    #[test]
+    fn sync_summary_display_matches_cli_output_shape() {
+        let summary = SyncSummary {
+            accounts_seen: 1,
+            matches_seen: 2,
+            uploaded: 3,
+            duplicates: 4,
+            cached: 5,
+            skipped: 6,
+            failed: 1,
+            failed_match_ids: vec!["match-1".to_string()],
+            failed_uploads: vec![FailedUpload {
+                target_name: "Rocket Sense".to_string(),
+                match_id: "match-1".to_string(),
+                reason: "token missing".to_string(),
+            }],
+        };
+
+        assert_eq!(
+            summary.to_string(),
+            concat!(
+                "accounts: 1\n",
+                "matches: 2\n",
+                "uploaded: 3\n",
+                "duplicates: 4\n",
+                "cached: 5\n",
+                "skipped: 6\n",
+                "failed: 1\n",
+                "failed_match_ids: match-1\n",
+                "failed_upload: Rocket Sense match-1: token missing\n",
+            )
+        );
+    }
+
+    #[test]
+    fn downloaded_replay_removes_file_on_drop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("match.replay");
+        std::fs::write(&path, "replay bytes").unwrap();
+
+        let replay = DownloadedReplay::new(path.clone());
+        assert!(replay.path().exists());
+        drop(replay);
+
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn replay_download_stems_are_unique_and_keep_match_id() {
+        let first = unique_replay_download_stem("match-1");
+        let second = unique_replay_download_stem("match-1");
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("match-1-"));
+        assert!(first.ends_with(".replay"));
+    }
+
+    fn match_entry(match_guid: &str) -> MatchEntry {
+        MatchEntry {
+            replay_url: "https://example.com/replay".to_string(),
+            match_info: Match {
+                match_guid: match_guid.to_string(),
+                record_start_timestamp: 0,
+                map_name: "DFH Stadium".to_string(),
+                playlist: 10,
+                team0_score: 1,
+                team1_score: 2,
+            },
+        }
+    }
 }

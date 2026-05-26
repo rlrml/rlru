@@ -111,84 +111,117 @@ pub struct BackfillSummary {
     pub failed_uploads: Vec<ReplayUploadRequest>,
 }
 
-pub fn load_summary() -> AppSummary {
-    match AppPaths::discover() {
-        Ok(paths) => {
-            let config_path = paths.config_file();
-            let config = Config::load_or_default(&config_path).unwrap_or_default();
-            let selected_account = config.behavior.selected_account.clone();
-            let selected_upload_destination = config.behavior.selected_upload_destination.clone();
-            let auto_upload = config.behavior.auto_upload;
-            AppSummary {
-                config_path: config_path.display().to_string(),
-                accounts: config
-                    .accounts
-                    .iter()
-                    .map(|account| AccountSummary {
-                        id: account.id,
-                        name: account.name.clone(),
-                        platform: platform_label(&account.platform).to_string(),
-                        sync_enabled: account.sync_enabled,
-                        selected: selected_account.as_ref() == Some(&account.name),
-                    })
-                    .collect(),
-                upload_destinations: config
-                    .upload_destinations
-                    .iter()
-                    .map(|target| UploadDestinationSummary {
-                        name: target.name.clone(),
-                        url: target.url.to_string(),
-                        upload_enabled: target.replay_upload.enabled,
-                        automatic: auto_upload
-                            && target.replay_upload.enabled
-                            && selected_upload_destination
-                                .as_ref()
-                                .is_none_or(|selected| selected == &target.name),
-                        auth: auth_label(&target.auth),
-                    })
-                    .collect(),
-                auto_upload,
-                upload_on_launch: config.behavior.upload_on_launch,
-                no_upload_while_connected: config.behavior.no_upload_while_connected,
-                selected_account,
-                selected_upload_destination,
-                auto_upload_interval_minutes: config.behavior.auto_upload_interval.as_secs() / 60,
-                auto_upload_jitter_minutes: config.behavior.auto_upload_jitter_max.as_secs() / 60,
-                interval: format!(
-                    "Every {} minutes",
-                    config.behavior.auto_upload_interval.as_secs() / 60
-                ),
-                jitter: format!(
-                    "{} minutes",
-                    config.behavior.auto_upload_jitter_max.as_secs() / 60
-                ),
-                status: "Ready for auth, sync, and uploader runs".to_string(),
-            }
+struct AppContext {
+    paths: AppPaths,
+    config_path: std::path::PathBuf,
+    config: Config,
+}
+
+impl AppContext {
+    fn load(ensure_paths: bool) -> Result<Self, String> {
+        let paths = AppPaths::discover().map_err(|error| error.to_string())?;
+        if ensure_paths {
+            paths.ensure().map_err(|error| error.to_string())?;
         }
-        Err(error) => AppSummary {
-            config_path: error.to_string(),
-            accounts: Vec::new(),
-            upload_destinations: Vec::new(),
-            auto_upload: false,
-            upload_on_launch: false,
-            no_upload_while_connected: false,
-            selected_account: None,
-            selected_upload_destination: None,
-            auto_upload_interval_minutes: 45,
-            auto_upload_jitter_minutes: 15,
-            interval: "Unavailable".to_string(),
-            jitter: "Unavailable".to_string(),
-            status: "Could not discover local app paths".to_string(),
-        },
+        let config_path = paths.config_file();
+        let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
+        Ok(Self {
+            paths,
+            config_path,
+            config,
+        })
+    }
+
+    fn sync_service(self) -> SyncService {
+        SyncService::new(self.paths, self.config)
+    }
+
+    fn save_config(&self) -> Result<(), String> {
+        self.config
+            .save(&self.config_path)
+            .map_err(|error| error.to_string())
+    }
+}
+
+pub fn load_summary() -> AppSummary {
+    match AppContext::load(false) {
+        Ok(context) => summary_from_config(&context.config_path, &context.config),
+        Err(error) => unavailable_summary(error),
+    }
+}
+
+fn summary_from_config(config_path: &std::path::Path, config: &Config) -> AppSummary {
+    let selected_account = config.behavior.selected_account.clone();
+    let selected_upload_destination = config.behavior.selected_upload_destination.clone();
+    let auto_upload = config.behavior.auto_upload;
+    AppSummary {
+        config_path: config_path.display().to_string(),
+        accounts: config
+            .accounts
+            .iter()
+            .map(|account| AccountSummary {
+                id: account.id,
+                name: account.name.clone(),
+                platform: platform_label(&account.platform).to_string(),
+                sync_enabled: account.sync_enabled,
+                selected: selected_account.as_ref() == Some(&account.name),
+            })
+            .collect(),
+        upload_destinations: config
+            .upload_destinations
+            .iter()
+            .map(|target| UploadDestinationSummary {
+                name: target.name.clone(),
+                url: target.url.to_string(),
+                upload_enabled: target.replay_upload.enabled,
+                automatic: auto_upload
+                    && target.replay_upload.enabled
+                    && selected_upload_destination
+                        .as_ref()
+                        .is_none_or(|selected| selected == &target.name),
+                auth: auth_label(&target.auth),
+            })
+            .collect(),
+        auto_upload,
+        upload_on_launch: config.behavior.upload_on_launch,
+        no_upload_while_connected: config.behavior.no_upload_while_connected,
+        selected_account,
+        selected_upload_destination,
+        auto_upload_interval_minutes: config.behavior.auto_upload_interval.as_secs() / 60,
+        auto_upload_jitter_minutes: config.behavior.auto_upload_jitter_max.as_secs() / 60,
+        interval: format!(
+            "Every {} minutes",
+            config.behavior.auto_upload_interval.as_secs() / 60
+        ),
+        jitter: format!(
+            "{} minutes",
+            config.behavior.auto_upload_jitter_max.as_secs() / 60
+        ),
+        status: "Ready for auth, sync, and uploader runs".to_string(),
+    }
+}
+
+fn unavailable_summary(error: String) -> AppSummary {
+    AppSummary {
+        config_path: error,
+        accounts: Vec::new(),
+        upload_destinations: Vec::new(),
+        auto_upload: false,
+        upload_on_launch: false,
+        no_upload_while_connected: false,
+        selected_account: None,
+        selected_upload_destination: None,
+        auto_upload_interval_minutes: 45,
+        auto_upload_jitter_minutes: 15,
+        interval: "Unavailable".to_string(),
+        jitter: "Unavailable".to_string(),
+        status: "Could not load local app state".to_string(),
     }
 }
 
 pub async fn load_history() -> Result<Vec<HistoryRow>, String> {
-    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
-    let config_path = paths.config_file();
-    let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
-    let service = SyncService::new(paths, config);
-    let entries = service
+    let entries = AppContext::load(false)?
+        .sync_service()
         .current_history(None)
         .await
         .map_err(|error| error.to_string())?;
@@ -230,11 +263,8 @@ pub async fn load_history() -> Result<Vec<HistoryRow>, String> {
 }
 
 pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
-    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
-    paths.ensure().map_err(|error| error.to_string())?;
-    let config_path = paths.config_file();
-    let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
-    let summary = SyncService::new(paths, config)
+    let summary = AppContext::load(true)?
+        .sync_service()
         .run_once_with_options(SyncOptions {
             include_online: true,
             target_name: None,
@@ -250,11 +280,8 @@ pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
 pub async fn upload_history_replay(
     request: ReplayUploadRequest,
 ) -> Result<BackfillSummary, String> {
-    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
-    paths.ensure().map_err(|error| error.to_string())?;
-    let config_path = paths.config_file();
-    let config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
-    let summary = SyncService::new(paths, config)
+    let summary = AppContext::load(true)?
+        .sync_service()
         .run_once_with_options(SyncOptions {
             include_online: true,
             target_name: Some(request.target_name),
@@ -483,14 +510,9 @@ pub fn tray_tooltip(summary: &AppSummary, sync_run: &SyncRunState, failed_count:
 fn update_config(
     mut update: impl FnMut(&mut Config) -> Result<(), String>,
 ) -> Result<AppSummary, String> {
-    let paths = AppPaths::discover().map_err(|error| error.to_string())?;
-    paths.ensure().map_err(|error| error.to_string())?;
-    let config_path = paths.config_file();
-    let mut config = Config::load_or_default(&config_path).map_err(|error| error.to_string())?;
-    update(&mut config)?;
-    config
-        .save(&config_path)
-        .map_err(|error| error.to_string())?;
+    let mut context = AppContext::load(true)?;
+    update(&mut context.config)?;
+    context.save_config()?;
     Ok(load_summary())
 }
 

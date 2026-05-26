@@ -1,8 +1,9 @@
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{bail, Context, Result};
 use reqwest::header::{AUTHORIZATION, LOCATION};
@@ -13,6 +14,7 @@ use crate::config::UploadDestinationConfig;
 
 const HISTORY_PER_ACCOUNT: usize = 20;
 const MAX_CACHE_SIZE_FACTOR: usize = 2;
+static CACHE_SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone)]
 pub struct ReplayUploader {
@@ -76,6 +78,18 @@ impl ReplayUploader {
         file_path: &Path,
         match_id: Option<&str>,
     ) -> Result<UploadResult> {
+        let auth_header = target.auth.header_value()?;
+        self.upload_replay_with_auth_header(target, file_path, match_id, auth_header)
+            .await
+    }
+
+    pub async fn upload_replay_with_auth_header(
+        &self,
+        target: &UploadDestinationConfig,
+        file_path: &Path,
+        match_id: Option<&str>,
+        auth_header: Option<String>,
+    ) -> Result<UploadResult> {
         if !target.replay_upload.enabled {
             return Ok(UploadResult {
                 outcome: UploadOutcome::Skipped,
@@ -83,7 +97,6 @@ impl ReplayUploader {
             });
         }
 
-        let auth_header = target.auth.header_value()?;
         self.ping_with_auth_header(target, auth_header.clone())
             .await?;
 
@@ -250,15 +263,27 @@ impl UploadCache {
             fs::create_dir_all(parent)
                 .with_context(|| format!("failed to create {}", parent.display()))?;
         }
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&self.path)
-            .with_context(|| format!("failed to write upload cache {}", self.path.display()))?;
+        let temp_path = upload_cache_temp_path(&self.path);
+        let mut file = fs::File::create(&temp_path).with_context(|| {
+            format!(
+                "failed to write upload cache temp file {}",
+                temp_path.display()
+            )
+        })?;
         for item in &self.items {
             writeln!(file, "{}", item.serialize())?;
         }
+        file.flush()?;
+        file.sync_all()?;
+        drop(file);
+
+        replace_file(&temp_path, &self.path).with_context(|| {
+            format!(
+                "failed to replace upload cache {} with {}",
+                self.path.display(),
+                temp_path.display()
+            )
+        })?;
         Ok(())
     }
 
@@ -269,6 +294,33 @@ impl UploadCache {
                 self.index.remove(&oldest.replay_id);
             }
         }
+    }
+}
+
+fn upload_cache_temp_path(path: &Path) -> PathBuf {
+    let sequence = CACHE_SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("upload-cache");
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.part",
+        std::process::id(),
+        sequence
+    ))
+}
+
+fn replace_file(from: &Path, to: &Path) -> Result<()> {
+    match fs::rename(from, to) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            fs::remove_file(to)
+                .with_context(|| format!("failed to remove old file {}", to.display()))?;
+            fs::rename(from, to)
+                .with_context(|| format!("failed to move {} to {}", from.display(), to.display()))
+        }
+        Err(error) => Err(error)
+            .with_context(|| format!("failed to move {} to {}", from.display(), to.display())),
     }
 }
 
@@ -436,6 +488,21 @@ mod tests {
 
         assert!(restored.contains("match-1"));
         assert_eq!(restored.location("match-1"), None);
+    }
+
+    #[test]
+    fn upload_cache_save_uses_temporary_file_without_leaving_part_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("uploaded.txt");
+        let mut cache = UploadCache::load(path.clone(), 1).unwrap();
+
+        cache.add("match-1").unwrap();
+
+        let entries = fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(entries, vec!["uploaded.txt"]);
     }
 
     #[test]

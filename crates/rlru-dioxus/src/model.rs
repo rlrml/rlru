@@ -1,0 +1,408 @@
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use rlru::app::{
+    add_account, backfill_upload_destinations, dedupe_upload_requests, failed_upload,
+    format_backfill_message, is_same_upload, is_same_upload_request, load_history, load_summary,
+    now_label, remove_account, save_auto_upload, save_overview_config, short_match_id,
+    upload_failure_reason, upload_history_replay, upsert_failed_upload, AccountFormData,
+    AppSummary, HistoryRow, OverviewConfigFormData, ReplayUploadRequest, SyncRunState,
+};
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+pub(crate) use rlru::app::{
+    auto_upload_label, format_failed_upload_retry_label, tray_sync_label, tray_tooltip,
+};
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AppSummary {
+    pub(crate) config_path: String,
+    pub(crate) accounts: Vec<AccountSummary>,
+    pub(crate) upload_destinations: Vec<UploadDestinationSummary>,
+    pub(crate) auto_upload: bool,
+    pub(crate) upload_on_launch: bool,
+    pub(crate) no_upload_while_connected: bool,
+    pub(crate) selected_account: Option<String>,
+    pub(crate) selected_upload_destination: Option<String>,
+    pub(crate) auto_upload_interval_minutes: u64,
+    pub(crate) auto_upload_jitter_minutes: u64,
+    pub(crate) interval: String,
+    pub(crate) jitter: String,
+    pub(crate) status: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+impl AppSummary {
+    pub(crate) fn account_count(&self) -> usize {
+        self.accounts.len()
+    }
+
+    pub(crate) fn upload_destination_count(&self) -> usize {
+        self.upload_destinations.len()
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AccountSummary {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) platform: String,
+    pub(crate) sync_enabled: bool,
+    pub(crate) selected: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AccountFormData {
+    pub(crate) name: String,
+    pub(crate) platform: String,
+    pub(crate) sync_enabled: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OverviewConfigFormData {
+    pub(crate) auto_upload_interval_minutes: String,
+    pub(crate) auto_upload_jitter_minutes: String,
+    pub(crate) upload_on_launch: bool,
+    pub(crate) no_upload_while_connected: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct UploadDestinationSummary {
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) upload_enabled: bool,
+    pub(crate) automatic: bool,
+    pub(crate) auth: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryRow {
+    pub(crate) account: String,
+    pub(crate) match_id: String,
+    pub(crate) timestamp: String,
+    pub(crate) map_name: String,
+    pub(crate) playlist: String,
+    pub(crate) score: String,
+    pub(crate) upload_destinations: Vec<HistoryUploadDestination>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryUploadDestination {
+    pub(crate) target_name: String,
+    pub(crate) state: String,
+    pub(crate) uploaded: bool,
+    pub(crate) upload_enabled: bool,
+    pub(crate) location: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReplayUploadRequest {
+    pub(crate) target_name: String,
+    pub(crate) match_id: String,
+    pub(crate) reason: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SyncRunState {
+    pub(crate) running: bool,
+    pub(crate) last_started_at: Option<String>,
+    pub(crate) last_completed_at: Option<String>,
+    pub(crate) last_summary: Option<BackfillSummary>,
+    pub(crate) last_error: Option<String>,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BackfillSummary {
+    pub(crate) uploaded: usize,
+    pub(crate) duplicates: usize,
+    pub(crate) cached: usize,
+    pub(crate) failed: usize,
+    pub(crate) failed_match_ids: Vec<String>,
+    pub(crate) failed_uploads: Vec<ReplayUploadRequest>,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn now_label() -> String {
+    "now".to_string()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn short_match_id(match_id: &str) -> &str {
+    match_id.get(..8).unwrap_or(match_id)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn format_backfill_message(
+    message: String,
+    failed_uploads: &[ReplayUploadRequest],
+) -> String {
+    if failed_uploads.is_empty() {
+        message
+    } else {
+        format!(
+            "{message}; first issue: {}",
+            format_failed_upload(&failed_uploads[0])
+        )
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn dedupe_upload_requests(
+    requests: Vec<ReplayUploadRequest>,
+) -> Vec<ReplayUploadRequest> {
+    let mut deduped = Vec::new();
+    for request in requests {
+        upsert_failed_upload(&mut deduped, request);
+    }
+    deduped
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn upsert_failed_upload(
+    failed_uploads: &mut Vec<ReplayUploadRequest>,
+    request: ReplayUploadRequest,
+) {
+    if let Some(existing) = failed_uploads
+        .iter_mut()
+        .find(|failure| is_same_upload_request(failure, &request))
+    {
+        *existing = request;
+    } else {
+        failed_uploads.push(request);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn is_same_upload_request(
+    left: &ReplayUploadRequest,
+    right: &ReplayUploadRequest,
+) -> bool {
+    is_same_upload(left, &right.target_name, &right.match_id)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn is_same_upload(
+    request: &ReplayUploadRequest,
+    target_name: &str,
+    match_id: &str,
+) -> bool {
+    request.target_name == target_name && request.match_id == match_id
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn failed_upload<'a>(
+    failed_uploads: &'a [ReplayUploadRequest],
+    target_name: &str,
+    match_id: &str,
+) -> Option<&'a ReplayUploadRequest> {
+    failed_uploads
+        .iter()
+        .find(|failure| is_same_upload(failure, target_name, match_id))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn upload_failure_reason(
+    failed_uploads: &[ReplayUploadRequest],
+    target_name: &str,
+    match_id: &str,
+) -> String {
+    failed_upload(failed_uploads, target_name, match_id)
+        .and_then(|failure| failure.reason.clone())
+        .unwrap_or_default()
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn format_failed_upload(failure: &ReplayUploadRequest) -> String {
+    let base = format!(
+        "{} to {}",
+        short_match_id(&failure.match_id),
+        failure.target_name
+    );
+    match &failure.reason {
+        Some(reason) => format!("{base}: {reason}"),
+        None => base,
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn load_history() -> Result<Vec<HistoryRow>, String> {
+    Ok(vec![
+        HistoryRow {
+            account: "colonelpanic8".to_string(),
+            match_id: "4E8409F8A8F4431DBF2412B30F2461B5".to_string(),
+            timestamp: "1700000000".to_string(),
+            map_name: "DFH Stadium".to_string(),
+            playlist: "13".to_string(),
+            score: "3-2".to_string(),
+            upload_destinations: vec![HistoryUploadDestination {
+                target_name: "Rocket Sense".to_string(),
+                state: "Uploaded".to_string(),
+                uploaded: true,
+                upload_enabled: true,
+                location: Some("https://rocket-sense.duckdns.org/replays/demo".to_string()),
+            }],
+        },
+        HistoryRow {
+            account: "colonelpanic8".to_string(),
+            match_id: "F90812E5EFDA4CC4AC7903596F02E6AB".to_string(),
+            timestamp: "1699999000".to_string(),
+            map_name: "Mannfield".to_string(),
+            playlist: "13".to_string(),
+            score: "1-4".to_string(),
+            upload_destinations: vec![HistoryUploadDestination {
+                target_name: "Rocket Sense".to_string(),
+                state: "Not uploaded".to_string(),
+                uploaded: false,
+                upload_enabled: true,
+                location: None,
+            }],
+        },
+    ])
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
+    Ok(BackfillSummary {
+        uploaded: 1,
+        duplicates: 0,
+        cached: 1,
+        failed: 0,
+        failed_match_ids: Vec::new(),
+        failed_uploads: Vec::new(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn upload_history_replay(
+    _request: ReplayUploadRequest,
+) -> Result<BackfillSummary, String> {
+    Ok(BackfillSummary {
+        uploaded: 1,
+        duplicates: 0,
+        cached: 0,
+        failed: 0,
+        failed_match_ids: Vec::new(),
+        failed_uploads: Vec::new(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn load_summary() -> AppSummary {
+    AppSummary {
+        config_path: "Browser preview uses default local config shape".to_string(),
+        accounts: vec![AccountSummary {
+            id: 1,
+            name: "colonelpanic8".to_string(),
+            platform: "Epic".to_string(),
+            sync_enabled: true,
+            selected: true,
+        }],
+        upload_destinations: vec![UploadDestinationSummary {
+            name: "Rocket Sense".to_string(),
+            url: "https://rocket-sense.duckdns.org/api/v1".to_string(),
+            upload_enabled: true,
+            automatic: true,
+            auth: "Bearer env token".to_string(),
+        }],
+        auto_upload: true,
+        upload_on_launch: false,
+        no_upload_while_connected: false,
+        selected_account: Some("colonelpanic8".to_string()),
+        selected_upload_destination: Some("Rocket Sense".to_string()),
+        auto_upload_interval_minutes: 45,
+        auto_upload_jitter_minutes: 15,
+        interval: "Every 45 minutes".to_string(),
+        jitter: "15 minutes".to_string(),
+        status: "Ready for auth, sync, and uploader runs".to_string(),
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Account name is required".to_string());
+    }
+
+    let mut summary = load_summary();
+    let next_id = summary
+        .accounts
+        .iter()
+        .map(|account| account.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    summary.accounts.push(AccountSummary {
+        id: next_id,
+        name: name.to_string(),
+        platform: platform_preview_label(&input.platform).to_string(),
+        sync_enabled: input.sync_enabled,
+        selected: false,
+    });
+    Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn remove_account(account_id: u32) -> Result<AppSummary, String> {
+    let mut summary = load_summary();
+    summary.accounts.retain(|account| account.id != account_id);
+    Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn platform_preview_label(value: &str) -> &'static str {
+    match value {
+        "steam" => "Steam",
+        "play_station" => "PlayStation",
+        "xbox" => "Xbox",
+        "nintendo" => "Nintendo",
+        _ => "Epic",
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn save_auto_upload(enabled: bool) -> Result<AppSummary, String> {
+    let mut summary = load_summary();
+    summary.auto_upload = enabled;
+    Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary, String> {
+    let interval_minutes = input
+        .auto_upload_interval_minutes
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "sync interval must be a whole number of minutes".to_string())?;
+    let jitter_minutes = input
+        .auto_upload_jitter_minutes
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "jitter max must be a whole number of minutes".to_string())?;
+    if interval_minutes == 0 {
+        return Err("sync interval must be at least 1 minute".to_string());
+    }
+    if jitter_minutes > interval_minutes {
+        return Err("auto_upload_jitter_max cannot exceed auto_upload_interval".to_string());
+    }
+
+    let mut summary = load_summary();
+    summary.auto_upload_interval_minutes = interval_minutes;
+    summary.auto_upload_jitter_minutes = jitter_minutes;
+    summary.upload_on_launch = input.upload_on_launch;
+    summary.no_upload_while_connected = input.no_upload_while_connected;
+    summary.interval = format!("Every {interval_minutes} minutes");
+    summary.jitter = format!("{jitter_minutes} minutes");
+    Ok(summary)
+}
