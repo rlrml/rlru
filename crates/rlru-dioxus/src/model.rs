@@ -66,11 +66,26 @@ pub(crate) enum HistoryUploadControl {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryUploadActivity {
+    pub(crate) class_name: &'static str,
+    pub(crate) headline: String,
+    pub(crate) detail: String,
+    pub(crate) metrics: Vec<HistoryUploadMetric>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryUploadMetric {
+    pub(crate) label: &'static str,
+    pub(crate) value: String,
+}
+
 pub(crate) fn history_upload_control(
     destination: &HistoryUploadDestination,
     match_id: &str,
     active_upload: Option<&ActiveUpload>,
     failed_uploads: &[ReplayUploadRequest],
+    batch_running: bool,
 ) -> HistoryUploadControl {
     if destination.uploaded {
         if let Some(location) = destination.location.clone() {
@@ -101,18 +116,107 @@ pub(crate) fn history_upload_control(
         failed_uploads,
         &destination.target_name,
         match_id,
+        batch_running,
     );
 
     HistoryUploadControl::Button {
         class_name,
         label,
         title,
-        disabled: active_upload.is_some(),
+        disabled: active_upload.is_some() || batch_running,
         request: ReplayUploadRequest {
             target_name: destination.target_name.clone(),
             match_id: match_id.to_string(),
             reason: None,
         },
+    }
+}
+
+pub(crate) fn history_upload_activity(
+    rows: &[HistoryRow],
+    active_upload: Option<&ActiveUpload>,
+    failed_uploads: &[ReplayUploadRequest],
+    batch_running: bool,
+) -> HistoryUploadActivity {
+    let counts = HistoryUploadCounts::from_rows(rows, failed_uploads);
+
+    let pending_work = counts.pending_work();
+    let (class_name, headline, detail) = if batch_running {
+        (
+            "upload-activity upload-activity-running",
+            if pending_work == 0 {
+                "Batch upload running".to_string()
+            } else {
+                format!(
+                    "Batch upload running for {}",
+                    pluralize(pending_work, "visible upload")
+                )
+            },
+            "Manual uploads are paused until this run finishes.".to_string(),
+        )
+    } else if let Some(upload) = active_upload {
+        let phase = match upload.phase {
+            UploadPhase::Pending => "pending",
+            UploadPhase::Uploading => "running",
+        };
+        (
+            "upload-activity upload-activity-running",
+            format!("1 upload {phase}"),
+            format!(
+                "{} to {}",
+                short_match_id(&upload.request.match_id),
+                upload.request.target_name
+            ),
+        )
+    } else if counts.visible_failures > 0 {
+        (
+            "upload-activity upload-activity-needs-attention",
+            format!(
+                "{} need attention",
+                pluralize(counts.visible_failures, "visible upload")
+            ),
+            ready_upload_detail(pending_work),
+        )
+    } else if pending_work > 0 {
+        (
+            "upload-activity",
+            format!(
+                "{} ready",
+                pluralize(pending_work, "visible upload")
+            ),
+            "Use Backfill Destinations to process them as one batch, or upload individual rows below."
+                .to_string(),
+        )
+    } else {
+        (
+            "upload-activity upload-activity-idle",
+            "No visible uploads pending".to_string(),
+            "Visible uploaded replays already have cached links.".to_string(),
+        )
+    };
+
+    HistoryUploadActivity {
+        class_name,
+        headline,
+        detail,
+        metrics: vec![
+            HistoryUploadMetric {
+                label: "Ready",
+                value: counts.upload_candidates.to_string(),
+            },
+            HistoryUploadMetric {
+                label: "Need links",
+                value: counts.link_candidates.to_string(),
+            },
+            HistoryUploadMetric {
+                label: "Open links",
+                value: counts.open_links.to_string(),
+            },
+            HistoryUploadMetric {
+                label: "Failed",
+                value: counts.visible_failures.to_string(),
+            },
+        ],
     }
 }
 
@@ -146,11 +250,70 @@ fn upload_button_title(
     failed_uploads: &[ReplayUploadRequest],
     target_name: &str,
     match_id: &str,
+    batch_running: bool,
 ) -> String {
     match active_state {
         Some(UploadPhase::Pending) => "Upload request is queued".to_string(),
         Some(UploadPhase::Uploading) => "Upload is in progress".to_string(),
+        None if batch_running => "Batch upload is already running".to_string(),
         None => upload_failure_reason(failed_uploads, target_name, match_id),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct HistoryUploadCounts {
+    upload_candidates: usize,
+    link_candidates: usize,
+    open_links: usize,
+    visible_failures: usize,
+}
+
+impl HistoryUploadCounts {
+    fn from_rows(rows: &[HistoryRow], failed_uploads: &[ReplayUploadRequest]) -> Self {
+        let mut counts = Self::default();
+        for row in rows {
+            for destination in &row.upload_destinations {
+                if destination.upload_enabled && !destination.uploaded {
+                    counts.upload_candidates += 1;
+                } else if destination.upload_enabled
+                    && destination.uploaded
+                    && destination.location.is_none()
+                {
+                    counts.link_candidates += 1;
+                } else if destination.location.is_some() {
+                    counts.open_links += 1;
+                }
+
+                if failed_upload(failed_uploads, &destination.target_name, &row.match_id).is_some()
+                {
+                    counts.visible_failures += 1;
+                }
+            }
+        }
+        counts
+    }
+
+    fn pending_work(self) -> usize {
+        self.upload_candidates + self.link_candidates
+    }
+}
+
+fn ready_upload_detail(pending_work: usize) -> String {
+    if pending_work == 0 {
+        "Resolve the failed upload before the visible history is clear.".to_string()
+    } else {
+        format!(
+            "{} still ready after failures are resolved.",
+            pluralize(pending_work, "visible upload")
+        )
+    }
+}
+
+fn pluralize(count: usize, noun: &str) -> String {
+    if count == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{count} {noun}s")
     }
 }
 
@@ -612,8 +775,13 @@ mod tests {
     fn pending_upload_has_distinct_button_state() {
         let active_upload = ActiveUpload::pending(request());
 
-        let control =
-            history_upload_control(&destination(false), MATCH_ID, Some(&active_upload), &[]);
+        let control = history_upload_control(
+            &destination(false),
+            MATCH_ID,
+            Some(&active_upload),
+            &[],
+            false,
+        );
 
         assert_eq!(
             control,
@@ -631,8 +799,13 @@ mod tests {
     fn running_upload_has_distinct_button_state() {
         let active_upload = ActiveUpload::uploading(request());
 
-        let control =
-            history_upload_control(&destination(false), MATCH_ID, Some(&active_upload), &[]);
+        let control = history_upload_control(
+            &destination(false),
+            MATCH_ID,
+            Some(&active_upload),
+            &[],
+            false,
+        );
 
         assert_eq!(
             control,
@@ -650,8 +823,13 @@ mod tests {
     fn uploaded_without_location_uses_link_specific_labels() {
         let active_upload = ActiveUpload::pending(request());
 
-        let control =
-            history_upload_control(&destination(true), MATCH_ID, Some(&active_upload), &[]);
+        let control = history_upload_control(
+            &destination(true),
+            MATCH_ID,
+            Some(&active_upload),
+            &[],
+            false,
+        );
 
         assert_eq!(
             control,
@@ -662,6 +840,93 @@ mod tests {
                 disabled: true,
                 request: request(),
             }
+        );
+    }
+
+    #[test]
+    fn batch_upload_disables_individual_upload_buttons() {
+        let control = history_upload_control(&destination(false), MATCH_ID, None, &[], true);
+
+        assert_eq!(
+            control,
+            HistoryUploadControl::Button {
+                class_name: "compact-button",
+                label: "Upload",
+                title: "Batch upload is already running".to_string(),
+                disabled: true,
+                request: request(),
+            }
+        );
+    }
+
+    #[test]
+    fn activity_summary_counts_visible_upload_work() {
+        let rows = vec![
+            HistoryRow {
+                account: "Primary".to_string(),
+                match_id: MATCH_ID.to_string(),
+                timestamp: "now".to_string(),
+                map_name: "DFH Stadium".to_string(),
+                playlist: "13".to_string(),
+                score: "3-2".to_string(),
+                upload_destinations: vec![
+                    destination(false),
+                    HistoryUploadDestination {
+                        target_name: "Ballchasing".to_string(),
+                        state: "Uploaded".to_string(),
+                        uploaded: true,
+                        upload_enabled: true,
+                        location: None,
+                    },
+                ],
+            },
+            HistoryRow {
+                account: "Primary".to_string(),
+                match_id: "F90812E5EFDA4CC4AC7903596F02E6AB".to_string(),
+                timestamp: "now".to_string(),
+                map_name: "Mannfield".to_string(),
+                playlist: "13".to_string(),
+                score: "1-4".to_string(),
+                upload_destinations: vec![HistoryUploadDestination {
+                    target_name: TARGET_NAME.to_string(),
+                    state: "Uploaded".to_string(),
+                    uploaded: true,
+                    upload_enabled: true,
+                    location: Some("https://example.com/replay".to_string()),
+                }],
+            },
+        ];
+
+        let activity = history_upload_activity(&rows, None, &[request()], true);
+
+        assert_eq!(
+            activity.class_name,
+            "upload-activity upload-activity-running"
+        );
+        assert_eq!(
+            activity.headline,
+            "Batch upload running for 2 visible uploads"
+        );
+        assert_eq!(
+            activity.metrics,
+            vec![
+                HistoryUploadMetric {
+                    label: "Ready",
+                    value: "1".to_string(),
+                },
+                HistoryUploadMetric {
+                    label: "Need links",
+                    value: "1".to_string(),
+                },
+                HistoryUploadMetric {
+                    label: "Open links",
+                    value: "1".to_string(),
+                },
+                HistoryUploadMetric {
+                    label: "Failed",
+                    value: "1".to_string(),
+                },
+            ]
         );
     }
 }

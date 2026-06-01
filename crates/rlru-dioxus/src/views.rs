@@ -173,7 +173,7 @@ pub(crate) fn HistoryView(
                     button {
                         class: "secondary-button",
                         onclick: move |_| onrefresh.call(()),
-                        "Refresh"
+                        "Refresh History"
                     }
                     button {
                         class: "primary-button",
@@ -197,10 +197,18 @@ pub(crate) fn HistoryView(
                 Some(Err(error)) => rsx! {
                     p { class: "empty-state error-state", "{error}" }
                 },
-                Some(Ok(rows)) => rsx! {
+                Some(Ok(rows)) => {
+                    let upload_activity = history_upload_activity(
+                        &rows,
+                        active_upload.as_ref(),
+                        &failed_uploads,
+                        backfill_running,
+                    );
+                    rsx! {
                     if rows.is_empty() {
                         p { class: "empty-state", "No current RL API history entries found." }
                     } else {
+                        UploadActivitySummary { activity: upload_activity }
                         div { class: "history-table",
                             div { class: "history-row history-heading",
                                 span { "Match" }
@@ -226,6 +234,7 @@ pub(crate) fn HistoryView(
                                                     &row.match_id,
                                                     active_upload.as_ref(),
                                                     &failed_uploads,
+                                                    backfill_running,
                                                 ) {
                                                     HistoryUploadControl::OpenLink { location } => rsx! {
                                                         a {
@@ -268,7 +277,28 @@ pub(crate) fn HistoryView(
                             }
                         }
                     }
+                    }
                 },
+            }
+        }
+    }
+}
+
+#[component]
+pub(crate) fn UploadActivitySummary(activity: HistoryUploadActivity) -> Element {
+    rsx! {
+        div { class: "{activity.class_name}",
+            div { class: "upload-activity-copy",
+                strong { "{activity.headline}" }
+                span { "{activity.detail}" }
+            }
+            div { class: "upload-activity-metrics",
+                for metric in activity.metrics {
+                    span { class: "upload-activity-metric",
+                        small { "{metric.label}" }
+                        b { "{metric.value}" }
+                    }
+                }
             }
         }
     }

@@ -95,6 +95,7 @@ fn App() -> Element {
     let current_active_upload = active_upload();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
+    let show_config_refresh = active != ActiveView::History;
 
     use_effect(move || {
         if active_view() == ActiveView::History && !history_requested() {
@@ -208,13 +209,15 @@ fn App() -> Element {
                         h1 { "{active.label()}" }
                         p { "{active.description()}" }
                     }
-                    button {
-                        class: "primary-button",
-                        onclick: move |_| {
-                            summary.set(load_summary());
-                            action_message.set(String::new());
-                        },
-                        "Refresh"
+                    if show_config_refresh {
+                        button {
+                            class: "secondary-button",
+                            onclick: move |_| {
+                                summary.set(load_summary());
+                                action_message.set(String::new());
+                            },
+                            "Reload Config"
+                        }
                     }
                 }
                 if !message.is_empty() {

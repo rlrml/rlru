@@ -265,6 +265,75 @@ small,
   margin: 0;
 }
 
+.upload-activity {
+  align-items: center;
+  background: #f7faf8;
+  border: 1px solid #d8e0dd;
+  border-radius: 8px;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.upload-activity-running {
+  background: #ecf7f2;
+  border-color: #7bc2a1;
+}
+
+.upload-activity-needs-attention {
+  background: #fff6d8;
+  border-color: #d7b953;
+}
+
+.upload-activity-idle {
+  background: #f7faf8;
+}
+
+.upload-activity-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.upload-activity-copy strong {
+  font-size: 0.98rem;
+}
+
+.upload-activity-copy span {
+  color: #60727c;
+  overflow-wrap: anywhere;
+}
+
+.upload-activity-metrics {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(62px, max-content));
+}
+
+.upload-activity-metric {
+  background: #ffffff;
+  border: 1px solid #d8e0dd;
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  min-width: 62px;
+  padding: 7px 8px;
+}
+
+.upload-activity-metric small {
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.upload-activity-metric b {
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .status-dot {
   background: #2e9d71;
   border-radius: 50%;
@@ -625,6 +694,15 @@ a.state-pill {
   .activity-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .upload-activity {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .upload-activity-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .history-table {
