@@ -127,7 +127,7 @@
               cargoTestFlags = ["-p" cargoPackage];
               nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
               buildInputs = extraBuildInputs;
-              RUST_MIN_STACK = "67108864";
+              RUST_MIN_STACK = "536870912";
               inherit postFixup;
               meta = {
                 description = "Rocket League replay uploader";
