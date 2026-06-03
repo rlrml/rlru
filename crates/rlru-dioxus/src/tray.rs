@@ -79,14 +79,15 @@ pub(crate) fn DesktopTrayBridge(
     use futures_util::StreamExt;
 
     let mut tray_state = use_signal(|| None);
+    let mut window_hidden_to_tray = use_signal(|| false);
     let command_handler = use_coroutine(
         move |mut receiver: UnboundedReceiver<TrayCommand>| async move {
             while let Some(command) = receiver.next().await {
                 match command {
-                    TrayCommand::ShowWindow => show_window(),
-                    TrayCommand::ToggleWindow => toggle_window_visibility(),
+                    TrayCommand::ShowWindow => show_window(window_hidden_to_tray),
+                    TrayCommand::ToggleWindow => toggle_window_visibility(window_hidden_to_tray),
                     TrayCommand::SyncNow => {
-                        show_window();
+                        show_window(window_hidden_to_tray);
                         onsync.call(());
                     }
                     TrayCommand::RefreshHistory => onrefreshhistory.call(()),
@@ -109,6 +110,18 @@ pub(crate) fn DesktopTrayBridge(
         };
         dioxus::desktop::window().set_close_behavior(behaviour);
         tray_state.set(state);
+    });
+
+    dioxus::desktop::use_wry_event_handler(move |event, _| {
+        if matches!(
+            event,
+            dioxus::desktop::tao::event::Event::WindowEvent {
+                event: dioxus::desktop::tao::event::WindowEvent::CloseRequested,
+                ..
+            }
+        ) {
+            window_hidden_to_tray.set(true);
+        }
     });
 
     use_effect(use_reactive!(
@@ -415,7 +428,7 @@ impl ksni::Tray for RlruTrayItem {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.sender.unbounded_send(TrayCommand::ToggleWindow);
+        let _ = self.sender.unbounded_send(TrayCommand::ShowWindow);
     }
 
     fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
@@ -489,6 +502,20 @@ impl ksni::Tray for RlruTrayItem {
     }
 }
 
+#[cfg(all(
+    test,
+    feature = "desktop",
+    not(any(target_os = "ios", target_os = "android"))
+))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tray_left_click_activates_window_instead_of_menu() {
+        assert!(!<RlruTrayItem as ksni::Tray>::MENU_ON_ACTIVATE);
+    }
+}
+
 #[cfg(not(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -519,21 +546,24 @@ pub(crate) fn DesktopTrayBridge(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
-fn show_window() {
+fn show_window(mut window_hidden_to_tray: Signal<bool>) {
     let win = dioxus::desktop::window();
     restore_desktop_window_handle(win.window.clone());
+    window_hidden_to_tray.set(false);
 }
 
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
 ))]
-fn toggle_window_visibility() {
+fn toggle_window_visibility(mut window_hidden_to_tray: Signal<bool>) {
     let win = dioxus::desktop::window();
-    if win.window.is_visible() {
+    if !window_hidden_to_tray() && win.window.is_visible() {
         win.set_visible(false);
+        window_hidden_to_tray.set(true);
     } else {
         restore_desktop_window_handle(win.window.clone());
+        window_hidden_to_tray.set(false);
     }
 }
 
