@@ -32,7 +32,7 @@ fn desktop_data_dir() -> std::path::PathBuf {
 fn configure_linux_desktop_environment() {
     if std::env::var("XDG_SESSION_TYPE").unwrap_or_default() == "wayland" {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
-        std::env::set_var("GDK_BACKEND", "x11");
+        std::env::set_var("GDK_BACKEND", "wayland,x11");
     }
 
     glib::set_application_name("rlru");
@@ -253,6 +253,9 @@ pub(crate) fn launch_app() {
     }
 
     let mut config = Config::new()
+        // Dioxus's default Linux workaround forces GTK to X11. rlru prefers
+        // native Wayland so fractional-scaled compositors do not blur the UI.
+        .with_disable_dma_buf_on_wayland(false)
         .with_custom_head(desktop_head())
         .with_data_directory(desktop_data_dir())
         .with_background_color((243, 246, 244, 255))
