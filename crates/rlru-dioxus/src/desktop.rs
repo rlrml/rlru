@@ -266,7 +266,12 @@ pub(crate) fn launch_app() {
                 windows.push(window);
             }
         })
-        .with_window(WindowBuilder::new().with_title("rlru").with_visible(true));
+        .with_window(
+            WindowBuilder::new()
+                .with_title("rlru")
+                .with_decorations(false)
+                .with_visible(true),
+        );
 
     match icon_from_memory::<dioxus::desktop::tao::window::Icon>(APP_ICON_PNG) {
         Ok(icon) => config = config.with_icon(icon),
