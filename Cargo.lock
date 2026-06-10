@@ -4693,7 +4693,7 @@ dependencies = [
 
 [[package]]
 name = "rlru"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -4718,7 +4718,7 @@ dependencies = [
 
 [[package]]
 name = "rlru-dioxus"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "chrono",
  "dioxus",
