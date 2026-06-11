@@ -9,7 +9,7 @@ use reqwest::header::{AUTHORIZATION, LOCATION};
 use reqwest::StatusCode;
 use serde_json::Value;
 
-use crate::config::UploadDestinationConfig;
+use crate::config::{RankUploadConfig, UploadDestinationConfig};
 use crate::state_file::write_atomically;
 
 const HISTORY_PER_ACCOUNT: usize = 20;
@@ -78,7 +78,7 @@ impl ReplayUploader {
         match_id: Option<&str>,
     ) -> Result<UploadResult> {
         let auth_header = target.auth.header_value()?;
-        self.upload_replay_with_auth_header(target, file_path, match_id, auth_header)
+        self.upload_replay_with_auth_header(target, file_path, match_id, auth_header, None)
             .await
     }
 
@@ -88,6 +88,7 @@ impl ReplayUploader {
         file_path: &Path,
         match_id: Option<&str>,
         auth_header: Option<String>,
+        ranks_bundle: Option<&RankBundle>,
     ) -> Result<UploadResult> {
         if !target.replay_upload.enabled {
             return Ok(UploadResult {
@@ -110,8 +111,21 @@ impl ReplayUploader {
         let bytes = fs::read(file_path)
             .with_context(|| format!("failed to read replay {}", file_path.display()))?;
         let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
-        let form =
+        let mut form =
             reqwest::multipart::Form::new().part(target.replay_upload.file_field.clone(), part);
+
+        // Bundle player ranks into the same upload when the destination supports
+        // it (Rocket Sense). Replay files do not carry ranks, so this is how the
+        // metadata travels alongside the file in a single request.
+        if let (RankUploadConfig::Bundled { field }, Some(bundle)) =
+            (&target.rank_upload, ranks_bundle)
+        {
+            if !bundle.players.is_empty() {
+                let json =
+                    serde_json::to_string(bundle).context("failed to serialize rank bundle")?;
+                form = form.text(field.clone(), json);
+            }
+        }
 
         let response = self
             .request_with_auth_header(
@@ -149,7 +163,7 @@ impl ReplayUploader {
 
     /// Posts per-match player rank metadata, mirroring the BakkesMod
     /// AutoReplayUploader plugin's separate `POST /api/v1/mmr` request. No-op
-    /// when the destination has no MMR endpoint or there is nothing to send.
+    /// unless the destination uses an MMR endpoint and there is data to send.
     pub async fn upload_mmr_with_auth_header(
         &self,
         target: &UploadDestinationConfig,
@@ -157,14 +171,17 @@ impl ReplayUploader {
         match_id: &str,
         auth_header: Option<String>,
     ) -> Result<()> {
-        if !target.mmr_upload.enabled || payload.players.is_empty() {
+        let RankUploadConfig::Endpoint { path } = &target.rank_upload else {
+            return Ok(());
+        };
+        if payload.players.is_empty() {
             return Ok(());
         }
 
         let response = self
             .request_with_auth_header(
                 self.http
-                    .post(target.endpoint_url_without_query(&target.mmr_upload.path)?)
+                    .post(target.endpoint_url_without_query(path)?)
                     .json(payload),
                 auth_header,
             )
@@ -234,6 +251,40 @@ pub struct MmrSkill {
     pub tier: i64,
     pub division: i64,
     pub matches_played: i64,
+    pub mmr: f64,
+}
+
+/// Rich player rank payload bundled into the replay upload for destinations
+/// that accept it (Rocket Sense). Unlike [`MmrUpload`], this carries the full
+/// PsyNet skill snapshot — raw TrueSkill `mu`/`sigma` plus the before/after
+/// tier/division/mmr — so the server can store everything available.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RankBundle {
+    pub players: Vec<RankBundlePlayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RankBundlePlayer {
+    /// Platform-specific online id (the middle component of the PsyNet PlayerID).
+    pub platform_player_id: String,
+    /// PsyNet platform name (e.g. `Epic`, `Steam`, `PS4`); the server normalizes.
+    pub platform: String,
+    /// Playlist (queue) the skill is for.
+    pub playlist: i64,
+    /// Whether the skill is ranked/meaningful (PsyNet `bValid`).
+    pub valid: bool,
+    /// Rank after the match (current rank).
+    pub after: RankSnapshot,
+    /// Rank before the match.
+    pub before: RankSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RankSnapshot {
+    pub tier: i64,
+    pub division: i64,
+    pub mu: f64,
+    pub sigma: f64,
     pub mmr: f64,
 }
 
