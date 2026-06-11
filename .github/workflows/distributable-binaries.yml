@@ -217,16 +217,23 @@ jobs:
             local crate="$1"
             local version="$2"
 
-            curl -fsS "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1
+            curl -fsS -A "rlru-ci/1.0 (https://github.com/rlrml/rlru)" \
+              "https://crates.io/api/v1/crates/$crate/$version" >/dev/null 2>&1
           }
 
           cargo_publish_with_retries() {
             local crate="$1"
 
             for attempt in 1 2 3; do
-              if nix develop --command cargo publish -p "$crate" --locked; then
-                return
+              local output
+              output=$(nix develop --command cargo publish -p "$crate" --locked 2>&1) && return 0
+
+              if echo "$output" | grep -q "already exists"; then
+                echo "$crate is already published; skipping"
+                return 0
               fi
+
+              echo "$output" >&2
 
               if [[ "$attempt" -eq 3 ]]; then
                 return 1
