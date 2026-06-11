@@ -278,7 +278,7 @@ pub struct UploadDestinationConfig {
     pub ping: PingConfig,
     pub replay_upload: ReplayUploadConfig,
     #[serde(default)]
-    pub mmr_upload: MmrUploadConfig,
+    pub rank_upload: RankUploadConfig,
 }
 
 impl UploadDestinationConfig {
@@ -301,7 +301,7 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![409],
             },
-            mmr_upload: MmrUploadConfig::default(),
+            rank_upload: RankUploadConfig::None,
         }
     }
 
@@ -324,8 +324,7 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![409],
             },
-            mmr_upload: MmrUploadConfig {
-                enabled: true,
+            rank_upload: RankUploadConfig::Endpoint {
                 path: "/v1/mmr".to_string(),
             },
         }
@@ -353,7 +352,9 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![200, 409],
             },
-            mmr_upload: MmrUploadConfig::default(),
+            rank_upload: RankUploadConfig::Bundled {
+                field: "ranks".to_string(),
+            },
         }
     }
 
@@ -363,7 +364,7 @@ impl UploadDestinationConfig {
         self.auth.validate()?;
         self.ping.validate()?;
         self.replay_upload.validate()?;
-        self.mmr_upload.validate()?;
+        self.rank_upload.validate()?;
         Ok(())
     }
 
@@ -578,31 +579,34 @@ impl ReplayUploadConfig {
     }
 }
 
-/// Configuration for posting per-match player rank metadata to a destination.
+/// How a destination accepts per-match player rank metadata.
 ///
-/// Modeled on the BakkesMod AutoReplayUploader plugin, which posts a separate
-/// JSON payload of player ranks to `ballchasing.com/api/v1/mmr` alongside the
-/// replay file. Only Ballchasing exposes such an endpoint, so this is disabled
-/// by default and enabled for the built-in Ballchasing destination.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
-pub struct MmrUploadConfig {
-    pub enabled: bool,
-    pub path: String,
+/// Replay files do not carry ranks, so — mirroring the BakkesMod
+/// AutoReplayUploader plugin — the uploader submits them out of band, either as
+/// a separate POST to a ballchasing-style MMR endpoint or bundled into the
+/// replay upload as a multipart field (the richer Rocket Sense payload). Off by
+/// default; the built-in Ballchasing and Rocket Sense destinations enable it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum RankUploadConfig {
+    /// No rank metadata is sent.
+    #[default]
+    None,
+    /// Posted as a separate request to a ballchasing-style MMR endpoint, using
+    /// the BakkesMod-shaped JSON payload.
+    Endpoint { path: String },
+    /// Included as a multipart field in the replay upload, using the richer
+    /// Rocket Sense rank payload (full before/after skill snapshot).
+    Bundled { field: String },
 }
 
-impl Default for MmrUploadConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            path: "/v1/mmr".to_string(),
-        }
-    }
-}
-
-impl MmrUploadConfig {
+impl RankUploadConfig {
     pub fn validate(&self) -> Result<()> {
-        validate_endpoint_path("mmr_upload.path", &self.path)
+        match self {
+            Self::None => Ok(()),
+            Self::Endpoint { path } => validate_endpoint_path("rank_upload.path", path),
+            Self::Bundled { field } => validate_name("rank_upload.field", field),
+        }
     }
 }
 
@@ -800,19 +804,32 @@ mod tests {
     }
 
     #[test]
-    fn ballchasing_mmr_endpoint_is_enabled_without_query() {
+    fn ballchasing_uses_mmr_endpoint_without_query() {
         let target = UploadDestinationConfig::ballchasing();
 
-        assert!(target.mmr_upload.enabled);
-        let url = target
-            .endpoint_url_without_query(&target.mmr_upload.path)
-            .unwrap();
+        let RankUploadConfig::Endpoint { path } = &target.rank_upload else {
+            panic!("ballchasing should use an MMR endpoint");
+        };
+        let url = target.endpoint_url_without_query(path).unwrap();
         assert_eq!(url.as_str(), "https://ballchasing.com/api/v1/mmr");
     }
 
     #[test]
-    fn rocky_mmr_upload_is_disabled_by_default() {
-        assert!(!UploadDestinationConfig::rocky().mmr_upload.enabled);
+    fn rocket_sense_bundles_ranks_with_upload() {
+        assert_eq!(
+            UploadDestinationConfig::rocket_sense().rank_upload,
+            RankUploadConfig::Bundled {
+                field: "ranks".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rocky_rank_upload_is_disabled_by_default() {
+        assert_eq!(
+            UploadDestinationConfig::rocky().rank_upload,
+            RankUploadConfig::None
+        );
     }
 
     #[test]

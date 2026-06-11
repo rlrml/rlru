@@ -9,10 +9,13 @@ use tokio::io::AsyncWriteExt;
 
 use crate::auth::AuthManager;
 use crate::auth::EosTokenResponse;
-use crate::config::{AccountConfig, Config, UploadDestinationConfig};
+use crate::config::{AccountConfig, Config, RankUploadConfig, UploadDestinationConfig};
 use crate::paths::AppPaths;
 use crate::psynet::{MatchEntry, PlayerId, PsyNetClient};
-use crate::upload::{MmrPlayer, MmrSkill, MmrUpload, ReplayUploader, UploadCache, UploadOutcome};
+use crate::upload::{
+    MmrPlayer, MmrSkill, MmrUpload, RankBundle, RankBundlePlayer, RankSnapshot, ReplayUploader,
+    UploadCache, UploadOutcome,
+};
 
 static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -348,6 +351,14 @@ impl SyncService {
                     continue;
                 };
                 let auth_header = auth_header.clone();
+                // For destinations that bundle ranks into the upload (Rocket
+                // Sense), build the rich payload and attach it to the same
+                // request. Endpoint-mode destinations (Ballchasing) post
+                // separately after the upload, below.
+                let rank_bundle = match &target.config.rank_upload {
+                    RankUploadConfig::Bundled { .. } => Some(build_rank_bundle(replay)),
+                    _ => None,
+                };
                 let result = self
                     .uploader
                     .upload_replay_with_auth_header(
@@ -355,6 +366,7 @@ impl SyncService {
                         downloaded_replay.path(),
                         Some(match_id),
                         auth_header.clone(),
+                        rank_bundle.as_ref(),
                     )
                     .await;
 
@@ -394,25 +406,27 @@ impl SyncService {
                     }
                 };
 
-                if stored && target.config.mmr_upload.enabled {
-                    let payload = build_mmr_upload(replay);
-                    if !payload.players.is_empty() {
-                        if let Err(error) = self
-                            .uploader
-                            .upload_mmr_with_auth_header(
-                                target.config,
-                                &payload,
-                                match_id,
-                                auth_header,
-                            )
-                            .await
-                        {
-                            tracing::warn!(
-                                %error,
-                                match_id,
-                                target = %target.config.name,
-                                "failed to upload player rank metadata"
-                            );
+                if stored {
+                    if let RankUploadConfig::Endpoint { .. } = &target.config.rank_upload {
+                        let payload = build_mmr_upload(replay);
+                        if !payload.players.is_empty() {
+                            if let Err(error) = self
+                                .uploader
+                                .upload_mmr_with_auth_header(
+                                    target.config,
+                                    &payload,
+                                    match_id,
+                                    auth_header,
+                                )
+                                .await
+                            {
+                                tracing::warn!(
+                                    %error,
+                                    match_id,
+                                    target = %target.config.name,
+                                    "failed to upload player rank metadata"
+                                );
+                            }
                         }
                     }
                 }
@@ -551,6 +565,45 @@ fn build_mmr_upload(replay: &MatchEntry) -> MmrUpload {
         game: replay.match_info.match_guid.clone(),
         players,
     }
+}
+
+/// Builds the rich rank bundle from PsyNet match-history data for destinations
+/// that accept ranks bundled with the upload (Rocket Sense). Carries the full
+/// before/after skill snapshot (tier/division plus raw TrueSkill mu/sigma and
+/// the derived MMR). Players without valid skill data are omitted.
+fn build_rank_bundle(replay: &MatchEntry) -> RankBundle {
+    let playlist = replay.match_info.playlist;
+    let players = replay
+        .match_info
+        .players
+        .iter()
+        .filter(|player| player.skills.valid)
+        .filter_map(|player| {
+            let (platform, id) = parse_player_id(&player.player_id)?;
+            let skills = &player.skills;
+            Some(RankBundlePlayer {
+                platform_player_id: id,
+                platform: platform.to_string(),
+                playlist,
+                valid: skills.valid,
+                after: RankSnapshot {
+                    tier: skills.tier,
+                    division: skills.division,
+                    mu: skills.mu,
+                    sigma: skills.sigma,
+                    mmr: skills.mmr(),
+                },
+                before: RankSnapshot {
+                    tier: skills.prev_tier,
+                    division: skills.prev_division,
+                    mu: skills.prev_mu,
+                    sigma: skills.prev_sigma,
+                    mmr: skills.prev_mmr(),
+                },
+            })
+        })
+        .collect();
+    RankBundle { players }
 }
 
 /// Splits a PsyNet PlayerID (`Platform|id|splitscreen`) into its platform name
@@ -773,6 +826,57 @@ mod tests {
         assert_eq!(player.after.division, 3);
         assert_eq!(player.after.mmr, 30.0 * 20.0 + 100.0);
         assert_eq!(player.before.division, 2);
+        assert_eq!(player.before.mmr, 29.0 * 20.0 + 100.0);
+    }
+
+    #[test]
+    fn build_rank_bundle_captures_full_snapshot() {
+        let mut replay = match_entry("MATCH-GUID");
+        replay.match_info.playlist = 11;
+        replay.match_info.players = vec![
+            MatchPlayer {
+                player_id: "Epic|epic-account|0".to_string(),
+                player_name: "Blue".to_string(),
+                skills: MatchSkills {
+                    mu: 30.0,
+                    sigma: 2.5,
+                    tier: 12,
+                    division: 3,
+                    prev_mu: 29.0,
+                    prev_sigma: 2.6,
+                    prev_tier: 12,
+                    prev_division: 2,
+                    valid: true,
+                },
+                ..MatchPlayer::default()
+            },
+            MatchPlayer {
+                player_id: "Steam|76561198000000000|0".to_string(),
+                skills: MatchSkills {
+                    valid: false,
+                    ..MatchSkills::default()
+                },
+                ..MatchPlayer::default()
+            },
+        ];
+
+        let bundle = build_rank_bundle(&replay);
+
+        // The unranked (bValid == false) player is dropped.
+        assert_eq!(bundle.players.len(), 1);
+        let player = &bundle.players[0];
+        assert_eq!(player.platform_player_id, "epic-account");
+        assert_eq!(player.platform, "Epic");
+        assert_eq!(player.playlist, 11);
+        assert!(player.valid);
+        assert_eq!(player.after.tier, 12);
+        assert_eq!(player.after.division, 3);
+        assert_eq!(player.after.mu, 30.0);
+        assert_eq!(player.after.sigma, 2.5);
+        assert_eq!(player.after.mmr, 30.0 * 20.0 + 100.0);
+        assert_eq!(player.before.tier, 12);
+        assert_eq!(player.before.division, 2);
+        assert_eq!(player.before.mu, 29.0);
         assert_eq!(player.before.mmr, 29.0 * 20.0 + 100.0);
     }
 
