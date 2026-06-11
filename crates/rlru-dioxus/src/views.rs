@@ -526,3 +526,57 @@ pub(crate) fn Metric(label: String, value: String) -> Element {
         }
     }
 }
+
+const REPO_URL: &str = "https://github.com/rlrml/rlru";
+
+#[component]
+pub(crate) fn AboutView() -> Element {
+    let version = crate::version::VERSION;
+    let commit = crate::version::GIT_COMMIT;
+    let commit_short = crate::version::git_commit_short();
+    let target = crate::version::TARGET;
+    let has_commit = crate::version::has_git_commit();
+    let commit_url = format!("{REPO_URL}/commit/{}", commit.trim_end_matches("-dirty"));
+
+    rsx! {
+        div { class: "summary-grid",
+            Metric { label: "Version", value: version.to_string() }
+            Metric { label: "Commit", value: commit_short.to_string() }
+            Metric { label: "Target", value: target.to_string() }
+        }
+        section { class: "panel",
+            div { class: "panel-header",
+                h2 { "rlru" }
+                span { "Rocket League replay uploader" }
+            }
+            dl { class: "details",
+                dt { "Version" }
+                dd { "{version}" }
+                dt { "Git commit" }
+                dd {
+                    if has_commit {
+                        a {
+                            href: "{commit_url}",
+                            target: "_blank",
+                            rel: "noopener noreferrer",
+                            "{commit}"
+                        }
+                    } else {
+                        "unknown"
+                    }
+                }
+                dt { "Build target" }
+                dd { "{target}" }
+                dt { "Repository" }
+                dd {
+                    a {
+                        href: "{REPO_URL}",
+                        target: "_blank",
+                        rel: "noopener noreferrer",
+                        "{REPO_URL}"
+                    }
+                }
+            }
+        }
+    }
+}

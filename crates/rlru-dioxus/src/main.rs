@@ -4,6 +4,7 @@ use dioxus::prelude::*;
 mod desktop;
 mod model;
 mod tray;
+mod version;
 mod views;
 
 use model::*;
@@ -18,14 +19,16 @@ enum ActiveView {
     History,
     Accounts,
     UploadDestinations,
+    About,
 }
 
 impl ActiveView {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Overview,
         Self::History,
         Self::Accounts,
         Self::UploadDestinations,
+        Self::About,
     ];
 
     fn label(self) -> &'static str {
@@ -34,6 +37,7 @@ impl ActiveView {
             Self::History => "History",
             Self::Accounts => "Accounts",
             Self::UploadDestinations => "Upload Destinations",
+            Self::About => "About",
         }
     }
 
@@ -43,6 +47,7 @@ impl ActiveView {
             Self::History => "Current RL API matches and upload destination state",
             Self::Accounts => "Configured Rocket League account credentials",
             Self::UploadDestinations => "Replay destinations, upload mode, and activity",
+            Self::About => "Version, build, and project information",
         }
     }
 }
@@ -95,7 +100,7 @@ fn App() -> Element {
     let current_active_upload = active_upload();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
-    let show_config_refresh = active != ActiveView::History;
+    let show_config_refresh = active != ActiveView::History && active != ActiveView::About;
 
     use_effect(move || {
         if active_view() == ActiveView::History && !history_requested() {
@@ -366,6 +371,9 @@ fn App() -> Element {
                                 }
                             },
                         }
+                    },
+                    ActiveView::About => rsx! {
+                        AboutView {}
                     },
                 }
             }

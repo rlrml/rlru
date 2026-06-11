@@ -7,6 +7,7 @@ pub(crate) mod state_file;
 pub mod sync;
 pub mod upload;
 pub mod upload_name;
+pub mod version;
 
 pub use config::Config;
 pub use psynet;
