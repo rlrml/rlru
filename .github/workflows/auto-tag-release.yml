@@ -1,0 +1,66 @@
+name: Auto-tag release
+
+# When the rlru package version changes on main, automatically create and push
+# the matching vX.Y.Z tag. That tag push is what drives the existing release
+# pipeline in distributable-binaries.yml (crates.io publish + GitHub release).
+#
+# For the tag push to trigger the downstream tag-gated jobs, this workflow must
+# push using a Personal Access Token stored in the `RELEASE_PAT` secret (a push
+# made with the default GITHUB_TOKEN intentionally does NOT start new workflow
+# runs). Without that secret the tag is still created, but you'll need to push a
+# tag manually (e.g. `just release-tag`) to publish.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  auto-tag:
+    name: Tag version bumps
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT || github.token }}
+
+      - name: Read rlru version
+        id: version
+        run: |
+          set -euo pipefail
+          version="$(sed -n '0,/^version = "\(.*\)"$/s//\1/p' Cargo.toml)"
+          if [[ -z "$version" ]]; then
+            echo "could not determine rlru version from Cargo.toml" >&2
+            exit 1
+          fi
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "tag=v$version" >>"$GITHUB_OUTPUT"
+
+      - name: Create tag if missing
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          HAS_PAT: ${{ secrets.RELEASE_PAT != '' }}
+        run: |
+          set -euo pipefail
+
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "tag $TAG already exists; nothing to do"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "$TAG"
+
+          echo "created and pushed $TAG"
+          if [[ "$HAS_PAT" != "true" ]]; then
+            echo "::warning::RELEASE_PAT secret is not set; the release pipeline will not auto-trigger from this tag. Re-push the tag manually to publish."
+          fi

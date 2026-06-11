@@ -1,9 +1,74 @@
 # rlru
 
+[![CI](https://github.com/rlrml/rlru/actions/workflows/distributable-binaries.yml/badge.svg)](https://github.com/rlrml/rlru/actions/workflows/distributable-binaries.yml)
+[![crates.io](https://img.shields.io/crates/v/rlru.svg)](https://crates.io/crates/rlru)
+[![docs.rs](https://img.shields.io/docsrs/rlru)](https://docs.rs/rlru)
+[![license](https://img.shields.io/crates/l/rlru.svg)](#license)
+
 Rust-first Rocket League replay uploader.
 
 rlru uses strict TOML configuration, explicit local state paths, testable
 auth/upload boundaries, and a Dioxus client scaffold.
+
+## Crates
+
+This repository is a Cargo workspace. The reusable pieces are published to
+crates.io as their own crates:
+
+| Crate | Description | crates.io | docs.rs |
+| --- | --- | --- | --- |
+| [`rlru`](Cargo.toml) | CLI + library for uploading Rocket League replays | [![crates.io](https://img.shields.io/crates/v/rlru.svg)](https://crates.io/crates/rlru) | [![docs.rs](https://img.shields.io/docsrs/rlru)](https://docs.rs/rlru) |
+| [`psynet`](crates/psynet) | Standalone client for Psyonix's PsyNet RPC backend (Rocket League online services) | [![crates.io](https://img.shields.io/crates/v/psynet.svg)](https://crates.io/crates/psynet) | [![docs.rs](https://img.shields.io/docsrs/psynet)](https://docs.rs/psynet) |
+
+`crates/psynet` ([README](crates/psynet/README.md)) is independent of the rest of
+rlru and can be depended on directly. The `rlru-dioxus` desktop client also lives
+in this workspace but is not published. All published crates currently share a
+single version number.
+
+## Library usage
+
+`rlru` is a library as well as a CLI — the binary is a thin wrapper over the
+public API, so you can drive config, syncing, and uploads from your own Rust
+code.
+
+```toml
+[dependencies]
+rlru = "0.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+```
+
+```rust
+use rlru::Config;
+use rlru::paths::AppPaths;
+use rlru::sync::SyncService;
+
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    let paths = AppPaths::discover()?;
+    let config = Config::load_or_default(&paths.config_file())?;
+
+    // Run one sync pass: discover new replays and push them to every
+    // configured upload destination.
+    let summary = SyncService::new(paths, config).run_once().await?;
+    println!("uploaded {} replays", summary.uploaded);
+    Ok(())
+}
+```
+
+Key building blocks:
+
+- [`rlru::Config`](src/config.rs) — strict TOML config, accounts, and upload
+  destinations (`Config::load`, `validate`, helpers like
+  `UploadDestinationConfig::ballchasing()`).
+- [`rlru::sync::SyncService`](src/sync.rs) — the sync engine
+  (`run_once`, `run_once_with_options`, `current_history`).
+- [`rlru::upload`](src/upload.rs) — the upload destination abstraction.
+- [`rlru::psynet`](crates/psynet) — the PsyNet client is re-exported as
+  `rlru::psynet`, so `rlru` users don't need a separate dependency to talk to
+  PsyNet directly.
+
+Full API docs are on [docs.rs/rlru](https://docs.rs/rlru) and
+[docs.rs/psynet](https://docs.rs/psynet).
 
 ## Screenshots
 
@@ -26,22 +91,36 @@ just dioxus-desktop
 
 ## Releases
 
-GitHub releases are published when a `vX.Y.Z` tag matching the `rlru` Cargo
-package version is pushed. To cut a release from a clean `main` checkout:
+Releases are driven entirely by the `vX.Y.Z` tag that matches the `rlru` Cargo
+package version. All published crates (`rlru`, `psynet`) share that single
+version number.
+
+**Fully automatic (recommended):** bump the `version` in `Cargo.toml`,
+`crates/psynet/Cargo.toml`, and `crates/rlru-dioxus/Cargo.toml` and merge to
+`main`. The [`auto-tag-release`](.github/workflows/auto-tag-release.yml) workflow
+notices the new version and pushes the matching `vX.Y.Z` tag for you, which kicks
+off the release pipeline.
+
+> For the auto-created tag to trigger the downstream publish jobs, add a
+> Personal Access Token (with `contents: write`) as the `RELEASE_PAT` repository
+> secret — a tag pushed with the default `GITHUB_TOKEN` will not start new
+> workflow runs. Without it, the tag is still created; just re-push it manually.
+
+**Manual:** cut the tag yourself from a clean `main` checkout:
 
 ```bash
 just release-tag
 ```
 
-The release workflow uploads downloadable assets to the GitHub Releases page:
+Either way, the tagged run:
 
-- `rlru-cli-linux-x86_64.tar.gz`
-- `rlru-cli-windows-x86_64.zip`
-- `rlru-dioxus-linux-x86_64.AppImage`
-
-If the `CARGO_REGISTRY_TOKEN` repository secret is configured, the same tag run
-also publishes the crates to crates.io. GitHub release assets are still created
-when that secret is absent.
+- uploads downloadable assets to the GitHub Releases page:
+  - `rlru-cli-linux-x86_64.tar.gz`
+  - `rlru-cli-windows-x86_64.zip`
+  - `rlru-dioxus-linux-x86_64.AppImage`
+- publishes `psynet` then `rlru` to crates.io, when the `CARGO_REGISTRY_TOKEN`
+  repository secret is configured (GitHub release assets are still created when
+  that secret is absent).
 
 ## Windows Builds From Linux
 
@@ -84,3 +163,8 @@ or configure a command that prints the token to stdout:
 kind = "bearer_command"
 command = ["pass", "show", "rocket-sense/token"]
 ```
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

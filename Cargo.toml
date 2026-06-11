@@ -5,6 +5,11 @@ edition = "2021"
 description = "Rocket League replay uploader"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rlrml/rlru"
+homepage = "https://github.com/rlrml/rlru"
+documentation = "https://docs.rs/rlru"
+readme = "README.md"
+keywords = ["rocket-league", "replay", "uploader", "ballchasing", "psynet"]
+categories = ["command-line-utilities", "game-development"]
 
 [workspace]
 resolver = "2"

@@ -2,9 +2,14 @@
 name = "psynet"
 version = "0.1.6"
 edition = "2021"
-description = "Rocket League PsyNet API client"
+description = "Rust client for Psyonix's PsyNet RPC backend (Rocket League online services)"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/rlrml/rlru"
+homepage = "https://github.com/rlrml/rlru"
+documentation = "https://docs.rs/psynet"
+readme = "README.md"
+keywords = ["rocket-league", "psynet", "rlpp", "rpc", "game"]
+categories = ["api-bindings", "game-development"]
 
 [dependencies]
 anyhow = "1"
