@@ -277,6 +277,27 @@ pub struct RankBundlePlayer {
     pub after: RankSnapshot,
     /// Rank before the match.
     pub before: RankSnapshot,
+    /// Current per-playlist skill snapshot from `Skills/GetPlayersSkills`,
+    /// carrying counters the match-history rank metadata lacks (`win_streak`,
+    /// `matches_played`, `placement_matches_played`) plus PsyNet's own `mmr`.
+    /// Point-in-time as of the sync, NOT the match moment — accurate for fresh
+    /// uploads, stale for backfilled replays. Absent when PsyNet returned no
+    /// skill for this player/playlist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current: Option<CurrentSkill>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct CurrentSkill {
+    pub mmr: f64,
+    pub win_streak: i64,
+    pub matches_played: i64,
+    pub placement_matches_played: i64,
+    /// Unix epoch (seconds) when this snapshot was fetched from PsyNet — always
+    /// a moment *after* the match was played. The server compares it against the
+    /// match timestamp to gauge staleness: a small gap means the counters still
+    /// reflect the match; a large gap (backfilled replay) means they don't.
+    pub fetched_at: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
