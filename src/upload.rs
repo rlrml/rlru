@@ -78,15 +78,20 @@ impl ReplayUploader {
         match_id: Option<&str>,
     ) -> Result<UploadResult> {
         let auth_header = target.auth.header_value()?;
-        self.upload_replay_with_auth_header(target, file_path, match_id, auth_header, None)
+        self.upload_replay_with_auth_header(target, file_path, match_id, None, auth_header, None)
             .await
     }
 
+    /// Uploads a replay file. `upload_name`, when provided, becomes the multipart
+    /// filename (most destinations surface it as the replay's display name);
+    /// otherwise the name falls back to `{match_id}.replay` or the file's own
+    /// name.
     pub async fn upload_replay_with_auth_header(
         &self,
         target: &UploadDestinationConfig,
         file_path: &Path,
         match_id: Option<&str>,
+        upload_name: Option<&str>,
         auth_header: Option<String>,
         ranks_bundle: Option<&RankBundle>,
     ) -> Result<UploadResult> {
@@ -100,9 +105,10 @@ impl ReplayUploader {
         self.ping_with_auth_header(target, auth_header.clone())
             .await?;
 
-        let file_name = match match_id {
-            Some(match_id) => format!("{match_id}.replay"),
-            None => file_path
+        let file_name = match (upload_name, match_id) {
+            (Some(name), _) => name.to_string(),
+            (None, Some(match_id)) => format!("{match_id}.replay"),
+            (None, None) => file_path
                 .file_name()
                 .and_then(|value| value.to_str())
                 .context("replay path has no UTF-8 file name")?

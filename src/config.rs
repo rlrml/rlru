@@ -140,6 +140,10 @@ pub struct BehaviorConfig {
     pub selected_account: Option<String>,
     #[serde(alias = "selected_storage")]
     pub selected_upload_destination: Option<String>,
+    /// Template for the filename uploads are sent with (most destinations show
+    /// this as the replay's name). Supports `{PLACEHOLDER}` tokens — see
+    /// [`crate::upload_name`]. An empty string keeps the legacy match-id name.
+    pub upload_name_template: String,
 }
 
 impl Default for BehaviorConfig {
@@ -154,6 +158,7 @@ impl Default for BehaviorConfig {
             auto_upload_jitter_max: Duration::from_secs(15 * 60),
             selected_account: None,
             selected_upload_destination: None,
+            upload_name_template: crate::upload_name::DEFAULT_TEMPLATE.to_string(),
         }
     }
 }
@@ -165,6 +170,9 @@ impl BehaviorConfig {
         }
         if self.auto_upload_jitter_max > self.auto_upload_interval {
             bail!("auto_upload_jitter_max cannot exceed auto_upload_interval");
+        }
+        if self.upload_name_template.contains(['\n', '\r', '\0']) {
+            bail!("upload_name_template cannot contain control characters");
         }
         Ok(())
     }
@@ -677,6 +685,24 @@ mod tests {
         let parsed: Config = toml::from_str(&toml).unwrap();
 
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn empty_upload_name_template_is_allowed_as_opt_out() {
+        let mut config = Config::default();
+        config.behavior.upload_name_template = String::new();
+
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn rejects_upload_name_template_with_control_characters() {
+        let mut config = Config::default();
+        config.behavior.upload_name_template = "{PLAYER}\n{MODE}".to_string();
+
+        let err = config.validate().unwrap_err();
+
+        assert!(err.to_string().contains("upload_name_template"));
     }
 
     #[test]
