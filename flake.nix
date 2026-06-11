@@ -28,6 +28,11 @@
         lib = pkgs.lib;
         fenixPkgs = fenix.packages.${system};
         bundlePkgs = bundlers.bundlers.${system} or {};
+        # Git commit for `--version` / the GUI About view. The build scripts
+        # cannot read `.git` (it is stripped from `cleanSrc`), so surface the
+        # flake's revision through an env var instead. Falls back to the dirty
+        # revision when the tree is uncommitted, then to "unknown".
+        rlruGitCommit = self.rev or self.dirtyRev or "unknown";
         sourceRoot = ./.;
         cleanSrc = lib.cleanSourceWith {
           src = sourceRoot;
@@ -128,6 +133,7 @@
               nativeBuildInputs = [pkgs.pkg-config] ++ extraNativeBuildInputs;
               buildInputs = extraBuildInputs;
               RUST_MIN_STACK = "536870912";
+              RLRU_GIT_COMMIT = rlruGitCommit;
               inherit postFixup;
               meta = {
                 description = "Rocket League replay uploader";
@@ -147,6 +153,7 @@
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = ["-p" "rlru" "--target" linuxStaticTarget];
           doCheck = false;
+          RLRU_GIT_COMMIT = rlruGitCommit;
           nativeBuildInputs = [
             muslPkgs.stdenv.cc
           ];
@@ -179,6 +186,7 @@
             src = cleanSrc;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false;
+            RLRU_GIT_COMMIT = rlruGitCommit;
             nativeBuildInputs = [
               pkgs.pkg-config
               mingwPkgs.stdenv.cc

@@ -10,7 +10,7 @@ use rlru::sync::{SyncOptions, SyncService};
 use rlru::upload::{ReplayUploader, UploadCache, UploadOutcome};
 
 #[derive(Debug, Parser)]
-#[command(version, about)]
+#[command(version = rlru::version::LONG_VERSION, about)]
 struct Cli {
     #[arg(long)]
     config: Option<PathBuf>,
