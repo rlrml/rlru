@@ -384,6 +384,77 @@ pub struct Match {
     pub team0_score: i64,
     #[serde(rename = "Team1Score")]
     pub team1_score: i64,
+    #[serde(rename = "Players", default)]
+    pub players: Vec<MatchPlayer>,
+}
+
+/// Per-player record carried in each `Matches/GetMatchHistory v1` match,
+/// including the rank metadata (`Skills`) that PsyNet reports for the match.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct MatchPlayer {
+    #[serde(rename = "PlayerID")]
+    pub player_id: String,
+    #[serde(rename = "PlayerName")]
+    pub player_name: String,
+    #[serde(rename = "LastTeam")]
+    pub last_team: i64,
+    #[serde(rename = "TeamColor")]
+    pub team_color: String,
+    #[serde(rename = "Score")]
+    pub score: i64,
+    #[serde(rename = "Goals")]
+    pub goals: i64,
+    #[serde(rename = "Assists")]
+    pub assists: i64,
+    #[serde(rename = "Saves")]
+    pub saves: i64,
+    #[serde(rename = "Shots")]
+    pub shots: i64,
+    #[serde(rename = "Skills")]
+    pub skills: MatchSkills,
+}
+
+/// Rank/skill snapshot for a player in a single match. `Tier`/`Division` are the
+/// values *after* the match; `Prev*` are the values from *before* it. `Mu`/`Sigma`
+/// are the underlying TrueSkill values (display MMR is `Mu * 20 + 100`).
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct MatchSkills {
+    #[serde(rename = "Mu")]
+    pub mu: f64,
+    #[serde(rename = "Sigma")]
+    pub sigma: f64,
+    #[serde(rename = "Tier")]
+    pub tier: i64,
+    #[serde(rename = "Division")]
+    pub division: i64,
+    #[serde(rename = "PrevMu")]
+    pub prev_mu: f64,
+    #[serde(rename = "PrevSigma")]
+    pub prev_sigma: f64,
+    #[serde(rename = "PrevTier")]
+    pub prev_tier: i64,
+    #[serde(rename = "PrevDivision")]
+    pub prev_division: i64,
+    #[serde(rename = "bValid")]
+    pub valid: bool,
+}
+
+impl MatchSkills {
+    /// Display MMR after the match, derived from the TrueSkill mean.
+    pub fn mmr(&self) -> f64 {
+        Self::mu_to_mmr(self.mu)
+    }
+
+    /// Display MMR before the match, derived from the previous TrueSkill mean.
+    pub fn prev_mmr(&self) -> f64 {
+        Self::mu_to_mmr(self.prev_mu)
+    }
+
+    fn mu_to_mmr(mu: f64) -> f64 {
+        mu * 20.0 + 100.0
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]

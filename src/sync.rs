@@ -12,7 +12,7 @@ use crate::auth::EosTokenResponse;
 use crate::config::{AccountConfig, Config, UploadDestinationConfig};
 use crate::paths::AppPaths;
 use crate::psynet::{MatchEntry, PlayerId, PsyNetClient};
-use crate::upload::{ReplayUploader, UploadCache, UploadOutcome};
+use crate::upload::{MmrPlayer, MmrSkill, MmrUpload, ReplayUploader, UploadCache, UploadOutcome};
 
 static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -347,6 +347,7 @@ impl SyncService {
                 let UploadTargetAuth::Available(auth_header) = &target.auth else {
                     continue;
                 };
+                let auth_header = auth_header.clone();
                 let result = self
                     .uploader
                     .upload_replay_with_auth_header(
@@ -357,21 +358,24 @@ impl SyncService {
                     )
                     .await;
 
-                match result {
+                let stored = match result {
                     Ok(result) if result.outcome == UploadOutcome::Uploaded => {
                         summary.uploaded += 1;
                         target
                             .cache
                             .add_with_location(match_id.clone(), result.location)?;
+                        true
                     }
                     Ok(result) if result.outcome == UploadOutcome::Duplicate => {
                         summary.duplicates += 1;
                         target
                             .cache
                             .add_with_location(match_id.clone(), result.location)?;
+                        true
                     }
                     Ok(_) => {
                         summary.skipped += 1;
+                        false
                     }
                     Err(error) => {
                         record_failed_upload(
@@ -386,6 +390,30 @@ impl SyncService {
                             target = %target.config.name,
                             "failed to upload replay"
                         );
+                        false
+                    }
+                };
+
+                if stored && target.config.mmr_upload.enabled {
+                    let payload = build_mmr_upload(replay);
+                    if !payload.players.is_empty() {
+                        if let Err(error) = self
+                            .uploader
+                            .upload_mmr_with_auth_header(
+                                target.config,
+                                &payload,
+                                match_id,
+                                auth_header,
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                %error,
+                                match_id,
+                                target = %target.config.name,
+                                "failed to upload player rank metadata"
+                            );
+                        }
                     }
                 }
             }
@@ -486,6 +514,69 @@ impl SyncService {
             )
         })?;
         Ok(DownloadedReplay::new(final_path))
+    }
+}
+
+/// Builds the per-match player rank payload from PsyNet match-history data,
+/// mirroring what the BakkesMod plugin posts to Ballchasing's MMR endpoint.
+/// Players without valid skill data (e.g. unranked playlists) are omitted.
+fn build_mmr_upload(replay: &MatchEntry) -> MmrUpload {
+    let players = replay
+        .match_info
+        .players
+        .iter()
+        .filter(|player| player.skills.valid)
+        .filter_map(|player| {
+            let (platform, id) = parse_player_id(&player.player_id)?;
+            Some(MmrPlayer {
+                platform_id: online_platform_id(platform),
+                id,
+                before: MmrSkill {
+                    tier: player.skills.prev_tier,
+                    division: player.skills.prev_division,
+                    matches_played: 0,
+                    mmr: player.skills.prev_mmr(),
+                },
+                after: MmrSkill {
+                    tier: player.skills.tier,
+                    division: player.skills.division,
+                    matches_played: 0,
+                    mmr: player.skills.mmr(),
+                },
+                debug: player.player_name.clone(),
+            })
+        })
+        .collect();
+    MmrUpload {
+        game: replay.match_info.match_guid.clone(),
+        players,
+    }
+}
+
+/// Splits a PsyNet PlayerID (`Platform|id|splitscreen`) into its platform name
+/// and platform-specific id components.
+fn parse_player_id(player_id: &str) -> Option<(&str, String)> {
+    let mut parts = player_id.split('|');
+    let platform = parts.next()?;
+    let id = parts.next()?;
+    if platform.is_empty() || id.is_empty() {
+        return None;
+    }
+    Some((platform, id.to_string()))
+}
+
+/// Maps a PsyNet platform name to its Rocket League `OnlinePlatform` enum value,
+/// matching the integer Ballchasing expects in the `platform_id` field.
+fn online_platform_id(platform: &str) -> i64 {
+    match platform {
+        "Steam" => 1,
+        "PS4" | "PS3" => 2,
+        "Dingo" | "XboxOne" => 4,
+        "NNX" | "Switch" => 7,
+        "PsyNet" => 8,
+        "WeGame" => 10,
+        "Epic" => 11,
+        _ => 0,
     }
 }
 
@@ -637,7 +728,73 @@ fn unique_replay_download_stem(match_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::psynet::Match;
+    use crate::psynet::{Match, MatchPlayer, MatchSkills};
+
+    #[test]
+    fn build_mmr_upload_maps_skills_and_platforms() {
+        let mut replay = match_entry("MATCH-GUID");
+        replay.match_info.players = vec![
+            MatchPlayer {
+                player_id: "Epic|epic-account|0".to_string(),
+                player_name: "Blue".to_string(),
+                skills: MatchSkills {
+                    mu: 30.0,
+                    tier: 12,
+                    division: 3,
+                    prev_mu: 29.0,
+                    prev_tier: 12,
+                    prev_division: 2,
+                    valid: true,
+                    ..MatchSkills::default()
+                },
+                ..MatchPlayer::default()
+            },
+            MatchPlayer {
+                player_id: "Steam|76561198000000000|0".to_string(),
+                player_name: "Orange".to_string(),
+                skills: MatchSkills {
+                    valid: false,
+                    ..MatchSkills::default()
+                },
+                ..MatchPlayer::default()
+            },
+        ];
+
+        let payload = build_mmr_upload(&replay);
+
+        assert_eq!(payload.game, "MATCH-GUID");
+        // The unranked (bValid == false) player is dropped.
+        assert_eq!(payload.players.len(), 1);
+        let player = &payload.players[0];
+        assert_eq!(player.platform_id, 11);
+        assert_eq!(player.id, "epic-account");
+        assert_eq!(player.debug, "Blue");
+        assert_eq!(player.after.tier, 12);
+        assert_eq!(player.after.division, 3);
+        assert_eq!(player.after.mmr, 30.0 * 20.0 + 100.0);
+        assert_eq!(player.before.division, 2);
+        assert_eq!(player.before.mmr, 29.0 * 20.0 + 100.0);
+    }
+
+    #[test]
+    fn online_platform_id_maps_known_platforms() {
+        assert_eq!(online_platform_id("Steam"), 1);
+        assert_eq!(online_platform_id("PS4"), 2);
+        assert_eq!(online_platform_id("XboxOne"), 4);
+        assert_eq!(online_platform_id("Switch"), 7);
+        assert_eq!(online_platform_id("Epic"), 11);
+        assert_eq!(online_platform_id("Mystery"), 0);
+    }
+
+    #[test]
+    fn parse_player_id_splits_platform_and_id() {
+        assert_eq!(
+            parse_player_id("Epic|abc123|0"),
+            Some(("Epic", "abc123".to_string()))
+        );
+        assert_eq!(parse_player_id("Epic||0"), None);
+        assert_eq!(parse_player_id("nonsense"), None);
+    }
 
     #[test]
     fn selected_match_count_matches_case_insensitively() {
@@ -717,6 +874,7 @@ mod tests {
                 playlist: 10,
                 team0_score: 1,
                 team1_score: 2,
+                players: Vec::new(),
             },
         }
     }

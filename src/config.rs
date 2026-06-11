@@ -277,6 +277,8 @@ pub struct UploadDestinationConfig {
     pub auth: TargetAuth,
     pub ping: PingConfig,
     pub replay_upload: ReplayUploadConfig,
+    #[serde(default)]
+    pub mmr_upload: MmrUploadConfig,
 }
 
 impl UploadDestinationConfig {
@@ -299,6 +301,7 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![409],
             },
+            mmr_upload: MmrUploadConfig::default(),
         }
     }
 
@@ -320,6 +323,10 @@ impl UploadDestinationConfig {
                 file_field: "file".to_string(),
                 success_statuses: vec![201],
                 duplicate_statuses: vec![409],
+            },
+            mmr_upload: MmrUploadConfig {
+                enabled: true,
+                path: "/v1/mmr".to_string(),
             },
         }
     }
@@ -346,6 +353,7 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![200, 409],
             },
+            mmr_upload: MmrUploadConfig::default(),
         }
     }
 
@@ -355,15 +363,27 @@ impl UploadDestinationConfig {
         self.auth.validate()?;
         self.ping.validate()?;
         self.replay_upload.validate()?;
+        self.mmr_upload.validate()?;
         Ok(())
     }
 
     pub fn endpoint_url(&self, path: &str) -> Result<Url> {
+        self.build_endpoint_url(path, true)
+    }
+
+    /// Like [`Self::endpoint_url`] but without appending the destination's
+    /// configured query parameters. Used for the MMR endpoint, which (matching
+    /// the BakkesMod uploader) takes no `visibility`-style query parameters.
+    pub fn endpoint_url_without_query(&self, path: &str) -> Result<Url> {
+        self.build_endpoint_url(path, false)
+    }
+
+    fn build_endpoint_url(&self, path: &str, include_query: bool) -> Result<Url> {
         let mut url = self.url.clone();
         let base_path = url.path().trim_end_matches('/');
         let endpoint_path = path.trim_start_matches('/');
         url.set_path(&format!("{base_path}/{endpoint_path}"));
-        if !self.query.is_empty() {
+        if include_query && !self.query.is_empty() {
             let mut pairs = url.query_pairs_mut();
             for (key, value) in &self.query {
                 pairs.append_pair(key, value);
@@ -558,6 +578,34 @@ impl ReplayUploadConfig {
     }
 }
 
+/// Configuration for posting per-match player rank metadata to a destination.
+///
+/// Modeled on the BakkesMod AutoReplayUploader plugin, which posts a separate
+/// JSON payload of player ranks to `ballchasing.com/api/v1/mmr` alongside the
+/// replay file. Only Ballchasing exposes such an endpoint, so this is disabled
+/// by default and enabled for the built-in Ballchasing destination.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, deny_unknown_fields)]
+pub struct MmrUploadConfig {
+    pub enabled: bool,
+    pub path: String,
+}
+
+impl Default for MmrUploadConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: "/v1/mmr".to_string(),
+        }
+    }
+}
+
+impl MmrUploadConfig {
+    pub fn validate(&self) -> Result<()> {
+        validate_endpoint_path("mmr_upload.path", &self.path)
+    }
+}
+
 fn validate_name(label: &str, value: &str) -> Result<()> {
     if value.trim().is_empty() {
         bail!("{label} cannot be empty");
@@ -749,6 +797,22 @@ mod tests {
             url.as_str(),
             "https://ballchasing.com/api/v2/upload?visibility=public"
         );
+    }
+
+    #[test]
+    fn ballchasing_mmr_endpoint_is_enabled_without_query() {
+        let target = UploadDestinationConfig::ballchasing();
+
+        assert!(target.mmr_upload.enabled);
+        let url = target
+            .endpoint_url_without_query(&target.mmr_upload.path)
+            .unwrap();
+        assert_eq!(url.as_str(), "https://ballchasing.com/api/v1/mmr");
+    }
+
+    #[test]
+    fn rocky_mmr_upload_is_disabled_by_default() {
+        assert!(!UploadDestinationConfig::rocky().mmr_upload.enabled);
     }
 
     #[test]
