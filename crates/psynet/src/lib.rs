@@ -263,6 +263,22 @@ impl PsyNetRpc {
         Ok(response.player_data)
     }
 
+    /// Fetches the *current* per-playlist skill snapshot for each player via
+    /// `Skills/GetPlayersSkills v1`. Unlike the rank metadata embedded in match
+    /// history, this carries `WinStreak`, `MatchesPlayed`, and
+    /// `PlacementMatchesPlayed`, but it is a point-in-time value as of the call
+    /// (no before/after).
+    pub async fn get_players_skills(
+        &self,
+        player_ids: Vec<PlayerId>,
+    ) -> Result<Vec<PlayerWithSkills>> {
+        let request = GetPlayersSkillsRequest { player_ids };
+        let response: GetPlayersSkillsResponse = self
+            .send_request("Skills/GetPlayersSkills v1", &request)
+            .await?;
+        Ok(response.players)
+    }
+
     async fn send_request<T: for<'de> Deserialize<'de>>(
         &self,
         service: &str,
@@ -331,6 +347,12 @@ pub struct PlayerId(String);
 impl PlayerId {
     pub fn new(platform: PlayerPlatform, id: &str) -> Self {
         Self(format!("{}|{id}|0", platform.as_psynet_platform()))
+    }
+
+    /// Wraps a raw PsyNet PlayerID string (`Platform|id|splitscreen`), e.g. the
+    /// `PlayerID` carried on each [`MatchPlayer`].
+    pub fn from_psynet(raw: impl Into<String>) -> Self {
+        Self(raw.into())
     }
 }
 
@@ -457,6 +479,45 @@ impl MatchSkills {
     }
 }
 
+/// A player and their current per-playlist skills, as returned by
+/// `Skills/GetPlayersSkills v1`.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PlayerWithSkills {
+    #[serde(rename = "PlayerID")]
+    pub player_id: String,
+    #[serde(rename = "Skills")]
+    pub skills: Vec<PlayerSkill>,
+}
+
+/// Current skill snapshot for a single playlist from `Skills/GetPlayersSkills`.
+/// `Mu`/`Sigma`/`Tier`/`Division` mirror the match-history values, but this also
+/// reports cumulative counters (`WinStreak`, `MatchesPlayed`,
+/// `PlacementMatchesPlayed`) and PsyNet's own `MMR` field. These are
+/// point-in-time as of the request, not tied to any particular match.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(default)]
+pub struct PlayerSkill {
+    #[serde(rename = "Playlist")]
+    pub playlist: i64,
+    #[serde(rename = "Mu")]
+    pub mu: f64,
+    #[serde(rename = "Sigma")]
+    pub sigma: f64,
+    #[serde(rename = "Tier")]
+    pub tier: i64,
+    #[serde(rename = "Division")]
+    pub division: i64,
+    #[serde(rename = "MMR")]
+    pub mmr: f64,
+    #[serde(rename = "WinStreak")]
+    pub win_streak: i64,
+    #[serde(rename = "MatchesPlayed")]
+    pub matches_played: i64,
+    #[serde(rename = "PlacementMatchesPlayed")]
+    pub placement_matches_played: i64,
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct PlayerData {
     #[serde(rename = "PlayerID")]
@@ -525,6 +586,18 @@ struct GetProfileRequest {
 struct GetProfileResponse {
     #[serde(rename = "PlayerData")]
     player_data: Vec<PlayerData>,
+}
+
+#[derive(Debug, Serialize)]
+struct GetPlayersSkillsRequest {
+    #[serde(rename = "PlayerIDs")]
+    player_ids: Vec<PlayerId>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GetPlayersSkillsResponse {
+    #[serde(rename = "Players", default)]
+    players: Vec<PlayerWithSkills>,
 }
 
 #[derive(Debug, Deserialize)]

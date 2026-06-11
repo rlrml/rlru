@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,11 +11,22 @@ use crate::auth::AuthManager;
 use crate::auth::EosTokenResponse;
 use crate::config::{AccountConfig, Config, RankUploadConfig, UploadDestinationConfig};
 use crate::paths::AppPaths;
-use crate::psynet::{MatchEntry, PlayerId, PsyNetClient};
+use crate::psynet::{MatchEntry, PlayerId, PlayerSkill, PsyNetClient};
 use crate::upload::{
-    MmrPlayer, MmrSkill, MmrUpload, RankBundle, RankBundlePlayer, RankSnapshot, ReplayUploader,
-    UploadCache, UploadOutcome,
+    CurrentSkill, MmrPlayer, MmrSkill, MmrUpload, RankBundle, RankBundlePlayer, RankSnapshot,
+    ReplayUploader, UploadCache, UploadOutcome,
 };
+
+/// Current per-playlist skills keyed by the full PsyNet PlayerID string, as
+/// fetched once per sync from `Skills/GetPlayersSkills`, together with the time
+/// the fetch happened so downstream consumers can reason about staleness.
+#[derive(Debug, Default)]
+struct PlayerSkillIndex {
+    /// Unix epoch (seconds) when the snapshot was fetched, or `None` when no
+    /// fetch succeeded (in which case `skills` is empty).
+    fetched_at: Option<i64>,
+    skills: HashMap<String, Vec<PlayerSkill>>,
+}
 
 static DOWNLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -278,13 +289,15 @@ impl SyncService {
         }
 
         let matches = rpc.get_match_history().await?;
+        let player_skills = fetch_player_skills(&rpc, &matches).await;
         let _ = rpc.close().await;
-        self.upload_matches(matches, options).await
+        self.upload_matches(matches, &player_skills, options).await
     }
 
     async fn upload_matches(
         &self,
         matches: Vec<MatchEntry>,
+        player_skills: &PlayerSkillIndex,
         options: &SyncOptions,
     ) -> Result<SyncSummary> {
         let mut summary = SyncSummary {
@@ -356,7 +369,9 @@ impl SyncService {
                 // request. Endpoint-mode destinations (Ballchasing) post
                 // separately after the upload, below.
                 let rank_bundle = match &target.config.rank_upload {
-                    RankUploadConfig::Bundled { .. } => Some(build_rank_bundle(replay)),
+                    RankUploadConfig::Bundled { .. } => {
+                        Some(build_rank_bundle(replay, player_skills))
+                    }
                     _ => None,
                 };
                 let result = self
@@ -571,7 +586,7 @@ fn build_mmr_upload(replay: &MatchEntry) -> MmrUpload {
 /// that accept ranks bundled with the upload (Rocket Sense). Carries the full
 /// before/after skill snapshot (tier/division plus raw TrueSkill mu/sigma and
 /// the derived MMR). Players without valid skill data are omitted.
-fn build_rank_bundle(replay: &MatchEntry) -> RankBundle {
+fn build_rank_bundle(replay: &MatchEntry, player_skills: &PlayerSkillIndex) -> RankBundle {
     let playlist = replay.match_info.playlist;
     let players = replay
         .match_info
@@ -600,10 +615,79 @@ fn build_rank_bundle(replay: &MatchEntry) -> RankBundle {
                     sigma: skills.prev_sigma,
                     mmr: skills.prev_mmr(),
                 },
+                current: current_skill(player_skills, &player.player_id, playlist),
             })
         })
         .collect();
     RankBundle { players }
+}
+
+/// Looks up a player's current skill for the match's playlist from the index
+/// fetched via `Skills/GetPlayersSkills`. Returns `None` when the player is
+/// absent (e.g. the skills fetch failed) or has no skill for this playlist.
+fn current_skill(
+    player_skills: &PlayerSkillIndex,
+    player_id: &str,
+    playlist: i64,
+) -> Option<CurrentSkill> {
+    let fetched_at = player_skills.fetched_at?;
+    let skill = player_skills
+        .skills
+        .get(player_id)?
+        .iter()
+        .find(|skill| skill.playlist == playlist)?;
+    Some(CurrentSkill {
+        mmr: skill.mmr,
+        win_streak: skill.win_streak,
+        matches_played: skill.matches_played,
+        placement_matches_played: skill.placement_matches_played,
+        fetched_at,
+    })
+}
+
+/// Fetches current per-playlist skills for every player appearing in the match
+/// history, in a single `Skills/GetPlayersSkills` call. Failures are logged and
+/// degrade gracefully to an empty index so the upload still proceeds without the
+/// enriched counters.
+async fn fetch_player_skills(
+    rpc: &crate::psynet::PsyNetRpc,
+    matches: &[MatchEntry],
+) -> PlayerSkillIndex {
+    let player_ids: Vec<PlayerId> = matches
+        .iter()
+        .flat_map(|entry| entry.match_info.players.iter())
+        .map(|player| player.player_id.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .map(PlayerId::from_psynet)
+        .collect();
+
+    if player_ids.is_empty() {
+        return PlayerSkillIndex::default();
+    }
+
+    match rpc.get_players_skills(player_ids).await {
+        Ok(players) => PlayerSkillIndex {
+            fetched_at: Some(unix_now_seconds()),
+            skills: players
+                .into_iter()
+                .map(|player| (player.player_id, player.skills))
+                .collect(),
+        },
+        Err(error) => {
+            tracing::warn!(%error, "failed to fetch player skills; uploading ranks without current-skill counters");
+            PlayerSkillIndex::default()
+        }
+    }
+}
+
+/// Current wall-clock time as Unix epoch seconds, saturating to 0 if the system
+/// clock is set before the epoch.
+fn unix_now_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Splits a PsyNet PlayerID (`Platform|id|splitscreen`) into its platform name
@@ -781,7 +865,7 @@ fn unique_replay_download_stem(match_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::psynet::{Match, MatchPlayer, MatchSkills};
+    use crate::psynet::{Match, MatchPlayer, MatchSkills, PlayerSkill};
 
     #[test]
     fn build_mmr_upload_maps_skills_and_platforms() {
@@ -860,7 +944,31 @@ mod tests {
             },
         ];
 
-        let bundle = build_rank_bundle(&replay);
+        let mut player_skills = PlayerSkillIndex {
+            fetched_at: Some(1_700_000_000),
+            ..PlayerSkillIndex::default()
+        };
+        player_skills.skills.insert(
+            "Epic|epic-account|0".to_string(),
+            vec![
+                // A different playlist that must be ignored.
+                PlayerSkill {
+                    playlist: 10,
+                    win_streak: 99,
+                    ..PlayerSkill::default()
+                },
+                PlayerSkill {
+                    playlist: 11,
+                    mmr: 760.0,
+                    win_streak: 3,
+                    matches_played: 250,
+                    placement_matches_played: 10,
+                    ..PlayerSkill::default()
+                },
+            ],
+        );
+
+        let bundle = build_rank_bundle(&replay, &player_skills);
 
         // The unranked (bValid == false) player is dropped.
         assert_eq!(bundle.players.len(), 1);
@@ -878,6 +986,33 @@ mod tests {
         assert_eq!(player.before.division, 2);
         assert_eq!(player.before.mu, 29.0);
         assert_eq!(player.before.mmr, 29.0 * 20.0 + 100.0);
+
+        // Current counters come from the matching playlist (11), not 10.
+        let current = player.current.as_ref().expect("current skill present");
+        assert_eq!(current.mmr, 760.0);
+        assert_eq!(current.win_streak, 3);
+        assert_eq!(current.matches_played, 250);
+        assert_eq!(current.placement_matches_played, 10);
+        assert_eq!(current.fetched_at, 1_700_000_000);
+    }
+
+    #[test]
+    fn build_rank_bundle_omits_current_when_skills_missing() {
+        let mut replay = match_entry("MATCH-GUID");
+        replay.match_info.playlist = 11;
+        replay.match_info.players = vec![MatchPlayer {
+            player_id: "Epic|epic-account|0".to_string(),
+            skills: MatchSkills {
+                valid: true,
+                ..MatchSkills::default()
+            },
+            ..MatchPlayer::default()
+        }];
+
+        let bundle = build_rank_bundle(&replay, &PlayerSkillIndex::default());
+
+        assert_eq!(bundle.players.len(), 1);
+        assert!(bundle.players[0].current.is_none());
     }
 
     #[test]
