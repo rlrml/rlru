@@ -291,7 +291,8 @@ impl SyncService {
         let matches = rpc.get_match_history().await?;
         let player_skills = fetch_player_skills(&rpc, &matches).await;
         let _ = rpc.close().await;
-        self.upload_matches(matches, &player_skills, options).await
+        self.upload_matches(matches, &player_skills, options, account, &token.account_id)
+            .await
     }
 
     async fn upload_matches(
@@ -299,7 +300,14 @@ impl SyncService {
         matches: Vec<MatchEntry>,
         player_skills: &PlayerSkillIndex,
         options: &SyncOptions,
+        account: &AccountConfig,
+        account_id: &str,
     ) -> Result<SyncSummary> {
+        // PsyNet PlayerID for the synced account, used to find this account among
+        // the match players when rendering templated upload names ({PLAYER},
+        // {WINLOSS} are from this account's perspective).
+        let account_player_id = PlayerId::new(account.platform.clone(), account_id).to_string();
+        let name_template = &self.config.behavior.upload_name_template;
         let mut summary = SyncSummary {
             matches_seen: selected_match_count(&matches, &options.match_ids),
             ..SyncSummary::default()
@@ -358,6 +366,13 @@ impl SyncService {
                 }
             };
 
+            let upload_name = crate::upload_name::render_upload_name(
+                name_template,
+                replay,
+                &account_player_id,
+                &account.name,
+            );
+
             for index in pending_target_indexes {
                 let target = &mut targets[index];
                 let UploadTargetAuth::Available(auth_header) = &target.auth else {
@@ -380,6 +395,7 @@ impl SyncService {
                         target.config,
                         downloaded_replay.path(),
                         Some(match_id),
+                        upload_name.as_deref(),
                         auth_header.clone(),
                         rank_bundle.as_ref(),
                     )

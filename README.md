@@ -164,6 +164,35 @@ kind = "bearer_command"
 command = ["pass", "show", "rocket-sense/token"]
 ```
 
+### Upload names
+
+Replays are uploaded with a templated filename, which most destinations show as
+the replay's name. The default produces names like
+`2024-01-15.14.30 SaltySphinx Ranked Doubles Win`. Customize it in `[behavior]`:
+
+```toml
+[behavior]
+upload_name_template = "{YEAR}-{MONTH}-{DAY}.{HOUR}.{MIN} {PLAYER} {MODE} {WINLOSS}"
+```
+
+`{PLAYER}` and `{WINLOSS}` are from the synced account's perspective. Available
+placeholders:
+
+| Token | Meaning |
+| --- | --- |
+| `{YEAR}` `{MONTH}` `{DAY}` | Match date (local time, zero-padded) |
+| `{HOUR}` `{MIN}` `{SEC}` | Match time (local time, zero-padded) |
+| `{PLAYER}` | Synced account's in-match name (falls back to the account name) |
+| `{MODE}` | Playlist name (e.g. `Ranked Doubles`, `Tournament`) |
+| `{MAP}` | Map name (e.g. `DFH Stadium`) |
+| `{WINLOSS}` | `Win` / `Loss` / `Draw` for the synced account |
+| `{SCORE}` | Final score as `team0-team1` |
+| `{MATCH_ID}` | PsyNet match GUID |
+
+The rendered name is sanitized for use as a filename and gets a `.replay`
+extension automatically. Set `upload_name_template = ""` to keep the legacy
+match-id filename.
+
 ## License
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
