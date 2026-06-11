@@ -136,6 +136,53 @@ impl ReplayUploader {
         classify_upload_response(target, status, location, &body)
     }
 
+    pub async fn upload_mmr(
+        &self,
+        target: &UploadDestinationConfig,
+        payload: &MmrUpload,
+        match_id: &str,
+    ) -> Result<()> {
+        let auth_header = target.auth.header_value()?;
+        self.upload_mmr_with_auth_header(target, payload, match_id, auth_header)
+            .await
+    }
+
+    /// Posts per-match player rank metadata, mirroring the BakkesMod
+    /// AutoReplayUploader plugin's separate `POST /api/v1/mmr` request. No-op
+    /// when the destination has no MMR endpoint or there is nothing to send.
+    pub async fn upload_mmr_with_auth_header(
+        &self,
+        target: &UploadDestinationConfig,
+        payload: &MmrUpload,
+        match_id: &str,
+        auth_header: Option<String>,
+    ) -> Result<()> {
+        if !target.mmr_upload.enabled || payload.players.is_empty() {
+            return Ok(());
+        }
+
+        let response = self
+            .request_with_auth_header(
+                self.http
+                    .post(target.endpoint_url_without_query(&target.mmr_upload.path)?)
+                    .json(payload),
+                auth_header,
+            )
+            .send()
+            .await
+            .with_context(|| format!("failed to upload MMR for {match_id} to {}", target.name))?;
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            bail!(
+                "{} MMR upload for {match_id} failed with {status}: {body}",
+                target.name
+            );
+        }
+        Ok(())
+    }
+
     fn request_with_auth_header(
         &self,
         request: reqwest::RequestBuilder,
@@ -158,6 +205,36 @@ impl Default for ReplayUploader {
 pub struct UploadResult {
     pub outcome: UploadOutcome,
     pub location: Option<String>,
+}
+
+/// Player rank payload posted alongside a replay, matching the JSON schema the
+/// BakkesMod AutoReplayUploader plugin sends to `ballchasing.com/api/v1/mmr`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MmrUpload {
+    /// Match GUID the ranks belong to (the plugin calls this field `game`).
+    pub game: String,
+    pub players: Vec<MmrPlayer>,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MmrPlayer {
+    /// Rocket League `OnlinePlatform` enum value (Steam=1, PS4=2, Xbox=4,
+    /// Switch=7, Epic=11).
+    pub platform_id: i64,
+    /// Platform-specific player id (the middle component of the PsyNet PlayerID).
+    pub id: String,
+    pub before: MmrSkill,
+    pub after: MmrSkill,
+    /// Free-form debug field; the plugin stores the player name here.
+    pub debug: String,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct MmrSkill {
+    pub tier: i64,
+    pub division: i64,
+    pub matches_played: i64,
+    pub mmr: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
