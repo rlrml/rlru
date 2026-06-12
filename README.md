@@ -153,6 +153,35 @@ rlru --config ~/.config/rlru/config.toml config validate
 
 Tokens are stored separately from TOML config under the XDG config directory.
 
+### Accounts and Epic auth
+
+Add and authenticate an Epic Games account with the device-code flow:
+
+```bash
+rlru account add "My Epic Account" --authenticate --open
+```
+
+The command writes the account to `config.toml`, selects it, opens Epic's login
+page, prints the device code, waits for approval, and stores the refresh token
+under the account id in the local token directory.
+
+In the Dioxus desktop app, use the Accounts screen with `Epic Auth` checked, or
+click `Authenticate` on an existing Epic account.
+
+If the account is already in the config, authenticate it separately:
+
+```bash
+rlru auth --account "My Epic Account" device --open --wait
+```
+
+Useful account commands:
+
+```bash
+rlru account list
+rlru account select "My Epic Account"
+rlru account remove "My Epic Account"
+```
+
 The default upload destinations include Rocky, Ballchasing, and Rocket Sense at
 `https://rocket-sense.duckdns.org/api/v1`. For Rocket Sense uploads, set
 `ROCKET_SENSE_TOKEN` to a Rocket Sense bearer token before running `rlru sync`,

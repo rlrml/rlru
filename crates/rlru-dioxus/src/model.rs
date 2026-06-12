@@ -1,10 +1,11 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use rlru::app::{
-    add_account, backfill_upload_destinations, dedupe_upload_requests, failed_upload,
-    format_backfill_message, is_same_upload, is_same_upload_request, load_history, load_summary,
-    now_label, remove_account, save_auto_upload, save_overview_config, short_match_id,
-    upload_failure_reason, upload_history_replay, upsert_failed_upload, AccountFormData,
-    AppSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
+    add_account, backfill_upload_destinations, begin_account_device_auth, dedupe_upload_requests,
+    failed_upload, finish_account_device_auth, format_backfill_message, is_same_upload,
+    is_same_upload_request, load_history, load_summary, now_label, remove_account,
+    save_auto_upload, save_overview_config, short_match_id, upload_failure_reason,
+    upload_history_replay, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
+    HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
     SyncRunState,
 };
 #[cfg(all(
@@ -362,6 +363,16 @@ pub(crate) struct AccountFormData {
     pub(crate) name: String,
     pub(crate) platform: String,
     pub(crate) sync_enabled: bool,
+    pub(crate) authenticate: bool,
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct AccountAuthPrompt {
+    pub(crate) account_id: u32,
+    pub(crate) account_name: String,
+    pub(crate) user_code: String,
+    pub(crate) verification_uri: String,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -686,6 +697,25 @@ pub(crate) fn add_account(input: AccountFormData) -> Result<AppSummary, String> 
         selected: false,
     });
     Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn begin_account_device_auth(
+    account_id: u32,
+) -> Result<AccountAuthPrompt, String> {
+    Ok(AccountAuthPrompt {
+        account_id,
+        account_name: "Preview".to_string(),
+        user_code: "PREVIEW".to_string(),
+        verification_uri: "https://www.epicgames.com/activate".to_string(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn finish_account_device_auth(
+    prompt: AccountAuthPrompt,
+) -> Result<String, String> {
+    Ok(format!("Authenticated {}", prompt.account_name))
 }
 
 #[cfg(target_arch = "wasm32")]

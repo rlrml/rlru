@@ -1,9 +1,9 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use anyhow::{bail, Context, Result};
+use clap::{Parser, Subcommand, ValueEnum};
 use rlru::auth::AuthManager;
-use rlru::config::Config;
+use rlru::config::{AccountConfig, Config, PlayerPlatform};
 use rlru::daemon::run_sync_daemon;
 use rlru::paths::AppPaths;
 use rlru::sync::{SyncOptions, SyncService};
@@ -24,6 +24,10 @@ enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+    Account {
+        #[command(subcommand)]
+        command: AccountCommand,
     },
     Auth {
         #[arg(long)]
@@ -56,6 +60,64 @@ enum ConfigCommand {
         force: bool,
     },
     Validate,
+}
+
+#[derive(Debug, Subcommand)]
+enum AccountCommand {
+    List,
+    Add {
+        name: String,
+        #[arg(long, value_enum, default_value_t = AccountPlatform::Epic)]
+        platform: AccountPlatform,
+        #[arg(long)]
+        no_sync: bool,
+        #[arg(long = "no-select", action = clap::ArgAction::SetFalse, default_value_t = true)]
+        select: bool,
+        #[arg(long, alias = "auth")]
+        authenticate: bool,
+        #[arg(long, requires = "authenticate")]
+        open: bool,
+    },
+    Remove {
+        account: String,
+    },
+    Select {
+        account: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum AccountPlatform {
+    Epic,
+    Steam,
+    PlayStation,
+    Xbox,
+    Nintendo,
+}
+
+impl AccountPlatform {
+    fn into_player_platform(self) -> PlayerPlatform {
+        match self {
+            Self::Epic => PlayerPlatform::Epic,
+            Self::Steam => PlayerPlatform::Steam,
+            Self::PlayStation => PlayerPlatform::PlayStation,
+            Self::Xbox => PlayerPlatform::Xbox,
+            Self::Nintendo => PlayerPlatform::Nintendo,
+        }
+    }
+}
+
+impl std::fmt::Display for AccountPlatform {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let value = match self {
+            Self::Epic => "epic",
+            Self::Steam => "steam",
+            Self::PlayStation => "play-station",
+            Self::Xbox => "xbox",
+            Self::Nintendo => "nintendo",
+        };
+        formatter.write_str(value)
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -105,6 +167,7 @@ pub async fn run() -> Result<()> {
 
     match cli.command {
         Command::Config { command } => handle_config_command(command, &config_path),
+        Command::Account { command } => handle_account_command(command, &paths, &config_path).await,
         Command::Auth {
             account,
             profile_id,
@@ -116,6 +179,79 @@ pub async fn run() -> Result<()> {
             match_id,
         } => handle_upload_file(&paths, &config_path, &target, &path, match_id).await,
         Command::Sync { command } => handle_sync_command(command, paths, &config_path).await,
+    }
+}
+
+async fn handle_account_command(
+    command: AccountCommand,
+    paths: &AppPaths,
+    config_path: &Path,
+) -> Result<()> {
+    match command {
+        AccountCommand::List => {
+            let config = Config::load_or_default(config_path)?;
+            for account in &config.accounts {
+                let selected = if config.behavior.selected_account.as_ref() == Some(&account.name) {
+                    " selected"
+                } else {
+                    ""
+                };
+                let sync = if account.sync_enabled {
+                    "sync"
+                } else {
+                    "sync disabled"
+                };
+                println!(
+                    "{}\t{}\t{:?}\t{}{selected}",
+                    account.id, account.name, account.platform, sync
+                );
+            }
+            Ok(())
+        }
+        AccountCommand::Add {
+            name,
+            platform,
+            no_sync,
+            select,
+            authenticate,
+            open,
+        } => {
+            let platform = platform.into_player_platform();
+            if authenticate && platform != PlayerPlatform::Epic {
+                bail!("only Epic accounts can be authenticated");
+            }
+            let account = add_config_account(config_path, name, platform, !no_sync, select)?;
+            println!("added account {} ({})", account.name, account.id);
+            if authenticate {
+                authenticate_account(paths, &account, open).await?;
+            } else {
+                println!(
+                    "authenticate it with: rlru auth --account {} device --open --wait",
+                    shell_quote(&account.name)
+                );
+            }
+            Ok(())
+        }
+        AccountCommand::Remove { account } => {
+            let mut config = Config::load(config_path)?;
+            let index = resolve_account_index(&config, &account)?;
+            let removed = config.accounts.remove(index);
+            if config.behavior.selected_account.as_ref() == Some(&removed.name) {
+                config.behavior.selected_account = None;
+            }
+            config.save(config_path)?;
+            println!("removed account {}", removed.name);
+            Ok(())
+        }
+        AccountCommand::Select { account } => {
+            let mut config = Config::load(config_path)?;
+            let index = resolve_account_index(&config, &account)?;
+            let selected = config.accounts[index].name.clone();
+            config.behavior.selected_account = Some(selected.clone());
+            config.save(config_path)?;
+            println!("selected account {selected}");
+            Ok(())
+        }
     }
 }
 
@@ -147,6 +283,63 @@ fn handle_config_command(command: ConfigCommand, config_path: &Path) -> Result<(
             Ok(())
         }
     }
+}
+
+fn add_config_account(
+    config_path: &Path,
+    name: String,
+    platform: PlayerPlatform,
+    sync_enabled: bool,
+    select: bool,
+) -> Result<AccountConfig> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        bail!("account name cannot be empty");
+    }
+
+    let mut config = Config::load_or_default(config_path)?;
+    if config
+        .accounts
+        .iter()
+        .any(|account| account.name == trimmed)
+    {
+        bail!("account {trimmed:?} already exists");
+    }
+
+    let account = if !config_path.exists() && config.accounts == vec![AccountConfig::default()] {
+        config.accounts[0] = AccountConfig::new(0, trimmed.to_string(), platform, sync_enabled);
+        config.accounts[0].clone()
+    } else {
+        let next_id = config
+            .accounts
+            .iter()
+            .map(|account| account.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let account = AccountConfig::new(next_id, trimmed.to_string(), platform, sync_enabled);
+        config.accounts.push(account.clone());
+        account
+    };
+
+    if select {
+        config.behavior.selected_account = Some(account.name.clone());
+    }
+    config.save(config_path)?;
+    Ok(account)
+}
+
+async fn authenticate_account(paths: &AppPaths, account: &AccountConfig, open: bool) -> Result<()> {
+    let auth = AuthManager::for_account(paths, account);
+    let device = auth.begin_device_auth().await?;
+    println!("visit {}", device.verification_uri);
+    println!("enter code {}", device.user_code);
+    if open {
+        webbrowser::open(&device.verification_uri).context("failed to open browser")?;
+    }
+    let eos = auth.wait_for_device_auth(&device).await?;
+    println!("authenticated Epic account {}", eos.account_id);
+    Ok(())
 }
 
 async fn handle_auth_command(
@@ -199,6 +392,15 @@ async fn handle_auth_command(
     }
 }
 
+fn resolve_account_index(config: &Config, account: &str) -> Result<usize> {
+    let account_id = account.parse::<u32>().ok();
+    config
+        .accounts
+        .iter()
+        .position(|candidate| candidate.name == account || account_id == Some(candidate.id))
+        .with_context(|| format!("unknown account {account:?}"))
+}
+
 fn resolve_auth_manager(
     paths: &AppPaths,
     config_path: &Path,
@@ -244,6 +446,17 @@ fn resolve_auth_manager(
         AuthManager::for_account(paths, account_config),
         format!("account {}", account_config.name),
     ))
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | ':'))
+    {
+        value.to_string()
+    } else {
+        format!("'{}'", value.replace('\'', r"'\''"))
+    }
 }
 
 async fn handle_upload_file(
@@ -347,6 +560,55 @@ fn resolve_backfill_target(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_add_replaces_default_account_when_creating_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+
+        let account = add_config_account(
+            &config_path,
+            "Main".to_string(),
+            PlayerPlatform::Epic,
+            true,
+            true,
+        )
+        .unwrap();
+        let config = Config::load(&config_path).unwrap();
+
+        assert_eq!(account.id, 0);
+        assert_eq!(config.accounts.len(), 1);
+        assert_eq!(config.accounts[0].name, "Main");
+        assert_eq!(config.behavior.selected_account.as_deref(), Some("Main"));
+    }
+
+    #[test]
+    fn account_add_appends_to_existing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        Config::default().save(&config_path).unwrap();
+
+        let account = add_config_account(
+            &config_path,
+            "Alt".to_string(),
+            PlayerPlatform::Epic,
+            false,
+            false,
+        )
+        .unwrap();
+        let config = Config::load(&config_path).unwrap();
+
+        assert_eq!(account.id, 1);
+        assert_eq!(config.accounts.len(), 2);
+        assert_eq!(config.accounts[1].name, "Alt");
+        assert!(!config.accounts[1].sync_enabled);
+        assert_eq!(config.behavior.selected_account, None);
+    }
+
+    #[test]
+    fn shell_quote_handles_spaces() {
+        assert_eq!(shell_quote("Main Account"), "'Main Account'");
+    }
 
     #[test]
     fn backfill_defaults_to_rocket_sense_when_available() {

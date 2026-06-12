@@ -415,6 +415,53 @@ small,
   white-space: nowrap;
 }
 
+.auth-prompt {
+  align-items: center;
+  background: #f4f8f7;
+  border: 1px solid #c9d8d5;
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) max-content max-content;
+  margin-bottom: 14px;
+  padding: 12px;
+}
+
+.auth-prompt > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.auth-prompt strong {
+  color: #16252b;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.auth-prompt span {
+  color: #60727c;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.auth-prompt code {
+  background: #ffffff;
+  border: 1px solid #b7c7c7;
+  border-radius: 6px;
+  color: #18242b;
+  font-size: 1rem;
+  font-weight: 900;
+  padding: 8px 10px;
+}
+
+.auth-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .account-row {
   border: 1px solid #d8e0dd;
   border-radius: 8px;
@@ -667,6 +714,23 @@ a.state-pill {
 
   .account-list {
     grid-template-columns: 1fr;
+  }
+
+  .auth-prompt {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .auth-prompt code {
+    text-align: center;
+  }
+
+  .auth-actions {
+    justify-content: stretch;
+  }
+
+  .auth-actions .secondary-button {
+    flex: 1 1 120px;
   }
 
   .destination-meta {

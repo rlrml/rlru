@@ -8,6 +8,7 @@ pub use model::*;
 
 use format::{auth_label, format_record_start_timestamp, platform_label};
 
+use crate::auth::AuthManager;
 use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform};
 use crate::paths::AppPaths;
 use crate::sync::{SyncOptions, SyncService};
@@ -208,26 +209,86 @@ pub fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
 
     let platform = parse_platform(&input.platform)?;
 
-    update_config(|config| {
-        if config.accounts.iter().any(|account| account.name == name) {
-            return Err(format!("Account {name:?} already exists"));
-        }
+    let mut context = AppContext::load(true)?;
+    if context
+        .config
+        .accounts
+        .iter()
+        .any(|account| account.name == name)
+    {
+        return Err(format!("Account {name:?} already exists"));
+    }
 
-        let next_id = config
+    let account = if !context.config_path.exists()
+        && context.config.accounts == vec![AccountConfig::default()]
+    {
+        context.config.accounts[0] =
+            AccountConfig::new(0, name.to_string(), platform, input.sync_enabled);
+        context.config.accounts[0].clone()
+    } else {
+        let next_id = context
+            .config
             .accounts
             .iter()
             .map(|account| account.id)
             .max()
             .unwrap_or(0)
             .saturating_add(1);
-        config.accounts.push(AccountConfig::new(
-            next_id,
-            name.to_string(),
-            platform.clone(),
-            input.sync_enabled,
-        ));
-        Ok(())
+        let account = AccountConfig::new(next_id, name.to_string(), platform, input.sync_enabled);
+        context.config.accounts.push(account.clone());
+        account
+    };
+
+    context.config.behavior.selected_account = Some(account.name);
+    context.save_config()?;
+    Ok(load_summary())
+}
+
+pub async fn begin_account_device_auth(account_id: u32) -> Result<AccountAuthPrompt, String> {
+    let context = AppContext::load(true)?;
+    let account = context
+        .config
+        .accounts
+        .iter()
+        .find(|account| account.id == account_id)
+        .ok_or_else(|| format!("Account ID {account_id} no longer exists"))?;
+
+    if account.platform != PlayerPlatform::Epic {
+        return Err("Only Epic accounts can be authenticated".to_string());
+    }
+
+    let auth = AuthManager::for_account(&context.paths, account);
+    let device = auth
+        .begin_device_auth()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(AccountAuthPrompt {
+        account_id,
+        account_name: account.name.clone(),
+        user_code: device.user_code.clone(),
+        verification_uri: device.verification_uri.clone(),
+        device,
     })
+}
+
+pub async fn finish_account_device_auth(prompt: AccountAuthPrompt) -> Result<String, String> {
+    let context = AppContext::load(true)?;
+    let account = context
+        .config
+        .accounts
+        .iter()
+        .find(|account| account.id == prompt.account_id)
+        .ok_or_else(|| format!("Account ID {} no longer exists", prompt.account_id))?;
+    let auth = AuthManager::for_account(&context.paths, account);
+    let eos = auth
+        .wait_for_device_auth(&prompt.device)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(format!(
+        "Authenticated {} as Epic account {}",
+        prompt.account_name, eos.account_id
+    ))
 }
 
 pub fn remove_account(account_id: u32) -> Result<AppSummary, String> {

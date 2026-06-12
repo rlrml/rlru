@@ -307,7 +307,12 @@ pub(crate) fn UploadActivitySummary(activity: HistoryUploadActivity) -> Element 
 #[component]
 pub(crate) fn AccountsView(
     summary: AppSummary,
+    auth_prompt: Option<AccountAuthPrompt>,
+    auth_running: bool,
     onadd: EventHandler<AccountFormData>,
+    onauth: EventHandler<u32>,
+    onregenauth: EventHandler<u32>,
+    oncancelauth: EventHandler<()>,
     onremove: EventHandler<u32>,
 ) -> Element {
     let accounts = summary.accounts.clone();
@@ -315,8 +320,14 @@ pub(crate) fn AccountsView(
     let mut account_name = use_signal(String::new);
     let mut platform = use_signal(|| "epic".to_string());
     let mut sync_enabled = use_signal(|| true);
+    let mut authenticate = use_signal(|| true);
     let mut confirming_remove = use_signal(|| None::<u32>);
     let can_remove = account_count > 1;
+    let submit_label = if authenticate() && platform() == "epic" {
+        "Add & Authenticate"
+    } else {
+        "Add Account"
+    };
 
     rsx! {
         section { class: "panel compact-panel",
@@ -337,7 +348,13 @@ pub(crate) fn AccountsView(
                     span { "Platform" }
                     select {
                         value: "{platform}",
-                        oninput: move |event| platform.set(event.value()),
+                        oninput: move |event| {
+                            let selected = event.value();
+                            if selected != "epic" {
+                                authenticate.set(false);
+                            }
+                            platform.set(selected);
+                        },
                         option { value: "epic", "Epic" }
                         option { value: "steam", "Steam" }
                         option { value: "play_station", "PlayStation" }
@@ -353,19 +370,74 @@ pub(crate) fn AccountsView(
                     }
                     span { "Sync" }
                 }
+                label { class: "checkbox-field",
+                    input {
+                        r#type: "checkbox",
+                        checked: authenticate(),
+                        disabled: platform() != "epic",
+                        oninput: move |event| authenticate.set(event.checked()),
+                    }
+                    span { "Epic Auth" }
+                }
                 button {
                     class: "primary-button form-submit",
+                    disabled: auth_running,
                     onclick: move |_| {
                         onadd.call(AccountFormData {
                             name: account_name().trim().to_string(),
                             platform: platform(),
                             sync_enabled: sync_enabled(),
+                            authenticate: authenticate() && platform() == "epic",
                         });
                         account_name.set(String::new());
                         platform.set("epic".to_string());
                         sync_enabled.set(true);
+                        authenticate.set(true);
                     },
-                    "Add Account"
+                    "{submit_label}"
+                }
+            }
+            if let Some(prompt) = auth_prompt {
+                div { class: "auth-prompt",
+                    div {
+                        strong { "{prompt.account_name}" }
+                        span { "Epic device code" }
+                    }
+                    code { "{prompt.user_code}" }
+                    div { class: "auth-actions",
+                        a {
+                            class: "secondary-button",
+                            href: "{prompt.verification_uri}",
+                            target: "_blank",
+                            rel: "noreferrer",
+                            "Open Epic"
+                        }
+                        button {
+                            class: "secondary-button",
+                            onclick: move |_| onregenauth.call(prompt.account_id),
+                            "Regenerate"
+                        }
+                        button {
+                            class: "secondary-button",
+                            onclick: move |_| oncancelauth.call(()),
+                            "Cancel"
+                        }
+                    }
+                }
+            } else if auth_running {
+                div { class: "auth-prompt",
+                    div {
+                        strong { "Epic authentication" }
+                        span { "Starting" }
+                    }
+                    code { "..." }
+                    div { class: "auth-actions",
+                        button {
+                            class: "secondary-button",
+                            onclick: move |_| oncancelauth.call(()),
+                            "Cancel"
+                        }
+                    }
                 }
             }
             div { class: "account-list",
@@ -401,9 +473,17 @@ pub(crate) fn AccountsView(
                                     "Cancel"
                                 }
                             } else {
+                                if account.platform == "Epic" {
+                                    button {
+                                        class: "secondary-button",
+                                        disabled: auth_running,
+                                        onclick: move |_| onauth.call(account.id),
+                                        "Authenticate"
+                                    }
+                                }
                                 button {
                                     class: "secondary-button",
-                                    disabled: !can_remove,
+                                    disabled: !can_remove || auth_running,
                                     onclick: move |_| {
                                         if can_remove {
                                             confirming_remove.set(Some(account.id));

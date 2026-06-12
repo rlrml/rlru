@@ -1,3 +1,4 @@
+use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
 
 #[cfg(feature = "desktop")]
@@ -86,6 +87,10 @@ fn App() -> Element {
     let mut active_upload = use_signal(|| None::<ActiveUpload>);
     let mut sync_run = use_signal(SyncRunState::default);
     let mut failed_uploads = use_signal(Vec::<ReplayUploadRequest>::new);
+    let account_auth_prompt = use_signal(|| None::<AccountAuthPrompt>);
+    let account_auth_running = use_signal(|| false);
+    let account_auth_task = use_signal(|| None::<Task>);
+    let account_auth_attempt = use_signal(|| 0_u64);
     let active = active_view();
     let current_summary = summary();
     let message = action_message();
@@ -100,6 +105,8 @@ fn App() -> Element {
     let current_active_upload = active_upload();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
+    let current_account_auth_prompt = account_auth_prompt();
+    let current_account_auth_running = account_auth_running();
     let show_config_refresh = active != ActiveView::History && active != ActiveView::About;
 
     use_effect(move || {
@@ -334,14 +341,67 @@ fn App() -> Element {
                     ActiveView::Accounts => rsx! {
                         AccountsView {
                             summary: current_summary,
-                            onadd: move |input| {
+                            auth_prompt: current_account_auth_prompt,
+                            auth_running: current_account_auth_running,
+                            onadd: move |input: AccountFormData| {
+                                let authenticate = input.authenticate && input.platform == "epic";
+                                let account_name = input.name.trim().to_string();
                                 match add_account(input) {
                                     Ok(updated) => {
+                                        let account_id = updated
+                                            .accounts
+                                            .iter()
+                                            .find(|account| account.name == account_name)
+                                            .map(|account| account.id);
                                         summary.set(updated);
-                                        action_message.set("Account added to config".to_string());
+                                        if authenticate {
+                                            if let Some(account_id) = account_id {
+                                                start_account_auth(
+                                                    account_id,
+                                                    action_message,
+                                                    account_auth_prompt,
+                                                    account_auth_running,
+                                                    account_auth_task,
+                                                    account_auth_attempt,
+                                                );
+                                            } else {
+                                                action_message.set("Account added, but it could not be found for authentication".to_string());
+                                            }
+                                        } else {
+                                            action_message.set("Account added to config".to_string());
+                                        }
                                     }
                                     Err(error) => action_message.set(error),
                                 }
+                            },
+                            onauth: move |account_id: u32| {
+                                start_account_auth(
+                                    account_id,
+                                    action_message,
+                                    account_auth_prompt,
+                                    account_auth_running,
+                                    account_auth_task,
+                                    account_auth_attempt,
+                                );
+                            },
+                            onregenauth: move |account_id: u32| {
+                                start_account_auth(
+                                    account_id,
+                                    action_message,
+                                    account_auth_prompt,
+                                    account_auth_running,
+                                    account_auth_task,
+                                    account_auth_attempt,
+                                );
+                            },
+                            oncancelauth: move |_| {
+                                cancel_account_auth(
+                                    action_message,
+                                    account_auth_prompt,
+                                    account_auth_running,
+                                    account_auth_task,
+                                    account_auth_attempt,
+                                );
                             },
                             onremove: move |account_id| {
                                 match remove_account(account_id) {
@@ -379,4 +439,83 @@ fn App() -> Element {
             }
         }
     }
+}
+
+fn start_account_auth(
+    account_id: u32,
+    mut action_message: Signal<String>,
+    mut account_auth_prompt: Signal<Option<AccountAuthPrompt>>,
+    mut account_auth_running: Signal<bool>,
+    mut account_auth_task: Signal<Option<Task>>,
+    mut account_auth_attempt: Signal<u64>,
+) {
+    if let Some(task) = account_auth_task.take() {
+        task.cancel();
+    }
+
+    let attempt = account_auth_attempt().wrapping_add(1);
+    account_auth_attempt.set(attempt);
+    account_auth_running.set(true);
+    account_auth_prompt.set(None);
+    action_message.set("Starting Epic authentication".to_string());
+
+    let task = spawn(async move {
+        match begin_account_device_auth(account_id).await {
+            Ok(prompt) => {
+                if account_auth_attempt() != attempt {
+                    return;
+                }
+
+                account_auth_prompt.set(Some(prompt.clone()));
+                action_message.set(format!(
+                    "Epic authentication pending for {}",
+                    prompt.account_name
+                ));
+
+                match finish_account_device_auth(prompt).await {
+                    Ok(message) => {
+                        if account_auth_attempt() != attempt {
+                            return;
+                        }
+                        account_auth_prompt.set(None);
+                        action_message.set(message);
+                    }
+                    Err(error) => {
+                        if account_auth_attempt() != attempt {
+                            return;
+                        }
+                        action_message.set(error);
+                    }
+                }
+            }
+            Err(error) => {
+                if account_auth_attempt() != attempt {
+                    return;
+                }
+                action_message.set(error);
+            }
+        }
+
+        if account_auth_attempt() == attempt {
+            account_auth_running.set(false);
+            account_auth_task.set(None);
+        }
+    });
+    account_auth_task.set(Some(task));
+}
+
+fn cancel_account_auth(
+    mut action_message: Signal<String>,
+    mut account_auth_prompt: Signal<Option<AccountAuthPrompt>>,
+    mut account_auth_running: Signal<bool>,
+    mut account_auth_task: Signal<Option<Task>>,
+    mut account_auth_attempt: Signal<u64>,
+) {
+    account_auth_attempt.set(account_auth_attempt().wrapping_add(1));
+    if let Some(task) = account_auth_task.take() {
+        task.cancel();
+    }
+    account_auth_prompt.set(None);
+    account_auth_running.set(false);
+    action_message.set("Epic authentication canceled".to_string());
 }
