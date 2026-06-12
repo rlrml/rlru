@@ -22,9 +22,9 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 const BASE_URL: &str = "https://api.rlpp.psynet.gg/rpc";
-const GAME_VERSION: &str = "260506.26700.517210";
-const FEATURE_SET: &str = "PrimeUpdate58_1";
-const PSY_BUILD_ID: &str = "-1652286008";
+const GAME_VERSION: &str = "260602.75104.519749";
+const FEATURE_SET: &str = "PrimeUpdate59";
+const PSY_BUILD_ID: &str = "939334844";
 const PSY_SIG_KEY: &str = "c338bd36fb8c42b1a431d30add939fc7";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
