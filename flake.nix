@@ -33,6 +33,7 @@
         # flake's revision through an env var instead. Falls back to the dirty
         # revision when the tree is uncommitted, then to "unknown".
         rlruGitCommit = self.rev or self.dirtyRev or "unknown";
+        packageVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
         sourceRoot = ./.;
         cleanSrc = lib.cleanSourceWith {
           src = sourceRoot;
@@ -125,7 +126,7 @@
           rustPlatform.buildRustPackage ({
               inherit pname buildFeatures buildNoDefaultFeatures;
               inherit desktopItems postInstall;
-              version = "0.1.9";
+              version = packageVersion;
               src = cleanSrc;
               cargoLock.lockFile = ./Cargo.lock;
               cargoBuildFlags = ["-p" cargoPackage];
@@ -148,7 +149,7 @@
             });
         rlruLinuxStaticCli = rustPlatform.buildRustPackage {
           pname = "rlru";
-          version = "0.1.9";
+          version = packageVersion;
           src = cleanSrc;
           cargoLock.lockFile = ./Cargo.lock;
           cargoBuildFlags = ["-p" "rlru" "--target" linuxStaticTarget];
@@ -182,7 +183,7 @@
         }:
           rustPlatform.buildRustPackage {
             inherit pname;
-            version = "0.1.9";
+            version = packageVersion;
             src = cleanSrc;
             cargoLock.lockFile = ./Cargo.lock;
             doCheck = false;
