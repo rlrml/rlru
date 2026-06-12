@@ -272,8 +272,7 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(default, deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct UploadDestinationConfig {
     pub name: String,
     pub url: Url,
@@ -285,7 +284,6 @@ pub struct UploadDestinationConfig {
     pub auth: TargetAuth,
     pub ping: PingConfig,
     pub replay_upload: ReplayUploadConfig,
-    #[serde(default)]
     pub rank_upload: RankUploadConfig,
 }
 
@@ -360,9 +358,7 @@ impl UploadDestinationConfig {
                 success_statuses: vec![201],
                 duplicate_statuses: vec![200, 409],
             },
-            rank_upload: RankUploadConfig::Bundled {
-                field: "ranks".to_string(),
-            },
+            rank_upload: rocket_sense_rank_upload(),
         }
     }
 
@@ -405,6 +401,90 @@ impl UploadDestinationConfig {
 impl Default for UploadDestinationConfig {
     fn default() -> Self {
         Self::rocky()
+    }
+}
+
+impl<'de> Deserialize<'de> for UploadDestinationConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let input = UploadDestinationConfigInput::deserialize(deserializer)?;
+        let rank_upload = input
+            .rank_upload
+            .unwrap_or_else(|| default_rank_upload_for_destination(&input.name, &input.url));
+
+        Ok(Self {
+            name: input.name,
+            url: input.url,
+            _legacy_predefined: input.legacy_predefined,
+            _legacy_primary: input.legacy_primary,
+            query: input.query,
+            auth: input.auth,
+            ping: input.ping,
+            replay_upload: input.replay_upload,
+            rank_upload,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct UploadDestinationConfigInput {
+    name: String,
+    url: Url,
+    #[serde(rename = "predefined")]
+    legacy_predefined: IgnoredLegacyBool,
+    #[serde(rename = "primary")]
+    legacy_primary: IgnoredLegacyBool,
+    query: BTreeMap<String, String>,
+    auth: TargetAuth,
+    ping: PingConfig,
+    replay_upload: ReplayUploadConfig,
+    rank_upload: Option<RankUploadConfig>,
+}
+
+impl Default for UploadDestinationConfigInput {
+    fn default() -> Self {
+        let default = UploadDestinationConfig::default();
+        Self {
+            name: default.name,
+            url: default.url,
+            legacy_predefined: IgnoredLegacyBool,
+            legacy_primary: IgnoredLegacyBool,
+            query: default.query,
+            auth: default.auth,
+            ping: default.ping,
+            replay_upload: default.replay_upload,
+            rank_upload: None,
+        }
+    }
+}
+
+fn is_rocket_sense_destination(name: &str, url: &Url) -> bool {
+    name == "Rocket Sense"
+        && url.as_str().trim_end_matches('/') == "https://rocket-sense.duckdns.org/api/v1"
+}
+
+fn is_ballchasing_destination(name: &str, url: &Url) -> bool {
+    name == "Ballchasing" && url.as_str().trim_end_matches('/') == "https://ballchasing.com/api"
+}
+
+fn default_rank_upload_for_destination(name: &str, url: &Url) -> RankUploadConfig {
+    if is_rocket_sense_destination(name, url) {
+        rocket_sense_rank_upload()
+    } else if is_ballchasing_destination(name, url) {
+        RankUploadConfig::Endpoint {
+            path: "/v1/mmr".to_string(),
+        }
+    } else {
+        RankUploadConfig::None
+    }
+}
+
+fn rocket_sense_rank_upload() -> RankUploadConfig {
+    RankUploadConfig::Bundled {
+        field: "ranks".to_string(),
     }
 }
 
@@ -754,6 +834,104 @@ mod tests {
         assert_eq!(parsed, config);
         assert!(!serialized.contains("predefined ="));
         assert!(!serialized.contains("primary ="));
+    }
+
+    #[test]
+    fn rocket_sense_uses_bundled_rank_upload_when_omitted() {
+        let toml = r#"
+[[upload_destinations]]
+name = "Rocket Sense"
+url = "https://rocket-sense.duckdns.org/api/v1"
+
+[upload_destinations.query]
+
+[upload_destinations.auth]
+kind = "none"
+
+[upload_destinations.ping]
+enabled = true
+path = "/health"
+
+[upload_destinations.replay_upload]
+enabled = true
+path = "/replays"
+file_field = "file"
+success_statuses = [201]
+duplicate_statuses = [200, 409]
+"#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.upload_destinations[0].rank_upload,
+            RankUploadConfig::Bundled {
+                field: "ranks".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn ballchasing_uses_endpoint_rank_upload_when_omitted() {
+        let toml = r#"
+[[upload_destinations]]
+name = "Ballchasing"
+url = "https://ballchasing.com/api"
+
+[upload_destinations.query]
+visibility = "public"
+
+[upload_destinations.auth]
+kind = "none"
+
+[upload_destinations.ping]
+enabled = true
+path = "/"
+
+[upload_destinations.replay_upload]
+enabled = true
+path = "/v2/upload"
+file_field = "file"
+success_statuses = [201]
+duplicate_statuses = [409]
+"#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.upload_destinations[0].rank_upload,
+            RankUploadConfig::Endpoint {
+                path: "/v1/mmr".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn rocket_sense_can_explicitly_disable_rank_upload() {
+        let toml = Config::default()
+            .to_pretty_toml()
+            .unwrap()
+            .replace("mode = \"bundled\"\nfield = \"ranks\"", "mode = \"none\"");
+
+        let config: Config = toml::from_str(&toml).unwrap();
+        let target = config.upload_destination("Rocket Sense").unwrap();
+
+        assert_eq!(target.rank_upload, RankUploadConfig::None);
+    }
+
+    #[test]
+    fn custom_destinations_do_not_enable_rank_upload_when_omitted() {
+        let toml = r#"
+[[upload_destinations]]
+name = "Custom"
+url = "https://example.com/api"
+"#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+
+        assert_eq!(
+            config.upload_destinations[0].rank_upload,
+            RankUploadConfig::None
+        );
     }
 
     #[test]

@@ -273,6 +273,9 @@ pub struct RankBundle {
 pub struct RankBundlePlayer {
     /// Platform-specific online id (the middle component of the PsyNet PlayerID).
     pub platform_player_id: String,
+    /// Player display name from PsyNet match history, when present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_name: Option<String>,
     /// PsyNet platform name (e.g. `Epic`, `Steam`, `PS4`); the server normalizes.
     pub platform: String,
     /// Playlist (queue) the skill is for.

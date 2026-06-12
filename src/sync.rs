@@ -614,6 +614,7 @@ fn build_rank_bundle(replay: &MatchEntry, player_skills: &PlayerSkillIndex) -> R
             let skills = &player.skills;
             Some(RankBundlePlayer {
                 platform_player_id: id,
+                player_name: non_empty_string(&player.player_name),
                 platform: platform.to_string(),
                 playlist,
                 valid: skills.valid,
@@ -659,6 +660,15 @@ fn current_skill(
         placement_matches_played: skill.placement_matches_played,
         fetched_at,
     })
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// Fetches current per-playlist skills for every player appearing in the match
@@ -990,6 +1000,7 @@ mod tests {
         assert_eq!(bundle.players.len(), 1);
         let player = &bundle.players[0];
         assert_eq!(player.platform_player_id, "epic-account");
+        assert_eq!(player.player_name.as_deref(), Some("Blue"));
         assert_eq!(player.platform, "Epic");
         assert_eq!(player.playlist, 11);
         assert!(player.valid);
