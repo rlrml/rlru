@@ -32,6 +32,7 @@ pub struct AccountSummary {
     pub platform: String,
     pub sync_enabled: bool,
     pub selected: bool,
+    pub saved_auth: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -46,17 +47,14 @@ pub struct AccountFormData {
 pub struct AccountAuthPrompt {
     pub account_id: u32,
     pub account_name: String,
-    pub user_code: String,
-    pub verification_uri: String,
-    pub device: crate::auth::DeviceAuthResponse,
+    pub login_url: String,
 }
 
 impl PartialEq for AccountAuthPrompt {
     fn eq(&self, other: &Self) -> bool {
         self.account_id == other.account_id
             && self.account_name == other.account_name
-            && self.user_code == other.user_code
-            && self.verification_uri == other.verification_uri
+            && self.login_url == other.login_url
     }
 }
 

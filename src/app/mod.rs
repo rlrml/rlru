@@ -48,12 +48,16 @@ impl AppContext {
 
 pub fn load_summary() -> AppSummary {
     match AppContext::load(false) {
-        Ok(context) => summary_from_config(&context.config_path, &context.config),
+        Ok(context) => summary_from_config(&context.paths, &context.config_path, &context.config),
         Err(error) => unavailable_summary(error),
     }
 }
 
-fn summary_from_config(config_path: &std::path::Path, config: &Config) -> AppSummary {
+fn summary_from_config(
+    paths: &AppPaths,
+    config_path: &std::path::Path,
+    config: &Config,
+) -> AppSummary {
     let selected_account = config.behavior.selected_account.clone();
     let selected_upload_destination = config.behavior.selected_upload_destination.clone();
     let auto_upload = config.behavior.auto_upload;
@@ -68,6 +72,10 @@ fn summary_from_config(config_path: &std::path::Path, config: &Config) -> AppSum
                 platform: platform_label(&account.platform).to_string(),
                 sync_enabled: account.sync_enabled,
                 selected: selected_account.as_ref() == Some(&account.name),
+                saved_auth: account.platform == PlayerPlatform::Epic
+                    && AuthManager::for_account(paths, account)
+                        .has_saved_login()
+                        .unwrap_or(false),
             })
             .collect(),
         upload_destinations: config
@@ -244,7 +252,7 @@ pub fn add_account(input: AccountFormData) -> Result<AppSummary, String> {
     Ok(load_summary())
 }
 
-pub async fn begin_account_device_auth(account_id: u32) -> Result<AccountAuthPrompt, String> {
+pub fn begin_account_auth(account_id: u32) -> Result<AccountAuthPrompt, String> {
     let context = AppContext::load(true)?;
     let account = context
         .config
@@ -258,21 +266,17 @@ pub async fn begin_account_device_auth(account_id: u32) -> Result<AccountAuthPro
     }
 
     let auth = AuthManager::for_account(&context.paths, account);
-    let device = auth
-        .begin_device_auth()
-        .await
-        .map_err(|error| error.to_string())?;
-
     Ok(AccountAuthPrompt {
         account_id,
         account_name: account.name.clone(),
-        user_code: device.user_code.clone(),
-        verification_uri: device.verification_uri.clone(),
-        device,
+        login_url: auth.login_url(),
     })
 }
 
-pub async fn finish_account_device_auth(prompt: AccountAuthPrompt) -> Result<String, String> {
+pub async fn finish_account_auth(
+    prompt: AccountAuthPrompt,
+    code: String,
+) -> Result<String, String> {
     let context = AppContext::load(true)?;
     let account = context
         .config
@@ -280,9 +284,14 @@ pub async fn finish_account_device_auth(prompt: AccountAuthPrompt) -> Result<Str
         .iter()
         .find(|account| account.id == prompt.account_id)
         .ok_or_else(|| format!("Account ID {} no longer exists", prompt.account_id))?;
+    let code = code.trim();
+    if code.is_empty() {
+        return Err("Epic authorization code is required".to_string());
+    }
+
     let auth = AuthManager::for_account(&context.paths, account);
     let eos = auth
-        .wait_for_device_auth(&prompt.device)
+        .authenticate_with_code(code)
         .await
         .map_err(|error| error.to_string())?;
     Ok(format!(

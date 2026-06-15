@@ -166,7 +166,8 @@ page, prints the device code, waits for approval, and stores the refresh token
 under the account id in the local token directory.
 
 In the Dioxus desktop app, use the Accounts screen with `Epic Auth` checked, or
-click `Authenticate` on an existing Epic account.
+click `Authenticate` on an existing Epic account. The app opens Epic's login
+page; paste the authorization code back into rlru to save durable local auth.
 
 If the account is already in the config, authenticate it separately:
 

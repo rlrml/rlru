@@ -29,4 +29,4 @@ mobile = ["dioxus/mobile"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 chrono = { version = "0.4", features = ["clock"] }
-rlru = { path = "../.." }
+rlru = { path = "../..", default-features = false }

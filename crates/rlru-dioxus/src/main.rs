@@ -394,6 +394,20 @@ fn App() -> Element {
                                     account_auth_attempt,
                                 );
                             },
+                            onfinishauth: move |(prompt, code): (AccountAuthPrompt, String)| {
+                                finish_account_auth_code(
+                                    prompt,
+                                    code,
+                                    AccountAuthState {
+                                        summary,
+                                        action_message,
+                                        prompt: account_auth_prompt,
+                                        running: account_auth_running,
+                                        task: account_auth_task,
+                                        attempt: account_auth_attempt,
+                                    },
+                                );
+                            },
                             oncancelauth: move |_| {
                                 cancel_account_auth(
                                     action_message,
@@ -455,53 +469,70 @@ fn start_account_auth(
 
     let attempt = account_auth_attempt().wrapping_add(1);
     account_auth_attempt.set(attempt);
-    account_auth_running.set(true);
+    account_auth_running.set(false);
     account_auth_prompt.set(None);
-    action_message.set("Starting Epic authentication".to_string());
+
+    match begin_account_auth(account_id) {
+        Ok(prompt) => {
+            if account_auth_attempt() != attempt {
+                return;
+            }
+            account_auth_prompt.set(Some(prompt.clone()));
+            action_message.set(format!(
+                "Epic authentication ready for {}",
+                prompt.account_name
+            ));
+        }
+        Err(error) => action_message.set(error),
+    }
+}
+
+#[derive(Clone, Copy)]
+struct AccountAuthState {
+    summary: Signal<AppSummary>,
+    action_message: Signal<String>,
+    prompt: Signal<Option<AccountAuthPrompt>>,
+    running: Signal<bool>,
+    task: Signal<Option<Task>>,
+    attempt: Signal<u64>,
+}
+
+fn finish_account_auth_code(prompt: AccountAuthPrompt, code: String, mut state: AccountAuthState) {
+    if let Some(task) = state.task.take() {
+        task.cancel();
+    }
+
+    let attempt = (state.attempt)().wrapping_add(1);
+    state.attempt.set(attempt);
+    state.running.set(true);
+    state.action_message.set(format!(
+        "Finishing Epic authentication for {}",
+        prompt.account_name
+    ));
 
     let task = spawn(async move {
-        match begin_account_device_auth(account_id).await {
-            Ok(prompt) => {
-                if account_auth_attempt() != attempt {
+        match finish_account_auth(prompt, code).await {
+            Ok(message) => {
+                if (state.attempt)() != attempt {
                     return;
                 }
-
-                account_auth_prompt.set(Some(prompt.clone()));
-                action_message.set(format!(
-                    "Epic authentication pending for {}",
-                    prompt.account_name
-                ));
-
-                match finish_account_device_auth(prompt).await {
-                    Ok(message) => {
-                        if account_auth_attempt() != attempt {
-                            return;
-                        }
-                        account_auth_prompt.set(None);
-                        action_message.set(message);
-                    }
-                    Err(error) => {
-                        if account_auth_attempt() != attempt {
-                            return;
-                        }
-                        action_message.set(error);
-                    }
-                }
+                state.prompt.set(None);
+                state.summary.set(load_summary());
+                state.action_message.set(message);
             }
             Err(error) => {
-                if account_auth_attempt() != attempt {
+                if (state.attempt)() != attempt {
                     return;
                 }
-                action_message.set(error);
+                state.action_message.set(error);
             }
         }
-
-        if account_auth_attempt() == attempt {
-            account_auth_running.set(false);
-            account_auth_task.set(None);
+        if (state.attempt)() == attempt {
+            state.running.set(false);
+            state.task.set(None);
         }
     });
-    account_auth_task.set(Some(task));
+    state.task.set(Some(task));
 }
 
 fn cancel_account_auth(

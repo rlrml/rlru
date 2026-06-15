@@ -312,6 +312,7 @@ pub(crate) fn AccountsView(
     onadd: EventHandler<AccountFormData>,
     onauth: EventHandler<u32>,
     onregenauth: EventHandler<u32>,
+    onfinishauth: EventHandler<(AccountAuthPrompt, String)>,
     oncancelauth: EventHandler<()>,
     onremove: EventHandler<u32>,
 ) -> Element {
@@ -321,7 +322,10 @@ pub(crate) fn AccountsView(
     let mut platform = use_signal(|| "epic".to_string());
     let mut sync_enabled = use_signal(|| true);
     let mut authenticate = use_signal(|| true);
+    let mut auth_code = use_signal(String::new);
     let mut confirming_remove = use_signal(|| None::<u32>);
+    let auth_prompt_for_submit = auth_prompt.clone();
+    let auth_prompt_account_id = auth_prompt.as_ref().map(|prompt| prompt.account_id);
     let can_remove = account_count > 1;
     let submit_label = if authenticate() && platform() == "epic" {
         "Add & Authenticate"
@@ -401,24 +405,47 @@ pub(crate) fn AccountsView(
                 div { class: "auth-prompt",
                     div {
                         strong { "{prompt.account_name}" }
-                        span { "Epic device code" }
+                        span { "Epic authorization code" }
                     }
-                    code { "{prompt.user_code}" }
+                    input {
+                        value: "{auth_code}",
+                        placeholder: "Authorization code",
+                        disabled: auth_running,
+                        oninput: move |event| auth_code.set(event.value()),
+                    }
                     div { class: "auth-actions",
                         a {
                             class: "secondary-button",
-                            href: "{prompt.verification_uri}",
+                            href: "{prompt.login_url}",
                             target: "_blank",
                             rel: "noreferrer",
                             "Open Epic"
                         }
                         button {
-                            class: "secondary-button",
-                            onclick: move |_| onregenauth.call(prompt.account_id),
-                            "Regenerate"
+                            class: "primary-button",
+                            disabled: auth_running || auth_code().trim().is_empty(),
+                            onclick: move |_| {
+                                if let Some(prompt) = auth_prompt_for_submit.clone() {
+                                    onfinishauth.call((prompt, auth_code()));
+                                    auth_code.set(String::new());
+                                }
+                            },
+                            "Save Login"
                         }
                         button {
                             class: "secondary-button",
+                            disabled: auth_running,
+                            onclick: move |_| {
+                                auth_code.set(String::new());
+                                if let Some(account_id) = auth_prompt_account_id {
+                                    onregenauth.call(account_id);
+                                }
+                            },
+                            "New Link"
+                        }
+                        button {
+                            class: "secondary-button",
+                            disabled: auth_running,
                             onclick: move |_| oncancelauth.call(()),
                             "Cancel"
                         }
@@ -452,6 +479,9 @@ pub(crate) fn AccountsView(
                                 if !account.sync_enabled {
                                     span { class: "badge muted", "Sync off" }
                                 }
+                                if account.saved_auth {
+                                    span { class: "badge", "Saved login" }
+                                }
                             }
                             div { class: "row-meta",
                                 span { "{account.platform}" }
@@ -478,7 +508,11 @@ pub(crate) fn AccountsView(
                                         class: "secondary-button",
                                         disabled: auth_running,
                                         onclick: move |_| onauth.call(account.id),
-                                        "Authenticate"
+                                        if account.saved_auth {
+                                            "Re-authenticate"
+                                        } else {
+                                            "Authenticate"
+                                        }
                                     }
                                 }
                                 button {

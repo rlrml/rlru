@@ -455,6 +455,17 @@ small,
   padding: 8px 10px;
 }
 
+.auth-prompt input {
+  background: #ffffff;
+  border: 1px solid #b7c7c7;
+  border-radius: 6px;
+  color: #18242b;
+  font-size: 0.95rem;
+  font-weight: 800;
+  min-width: 14rem;
+  padding: 8px 10px;
+}
+
 .auth-actions {
   display: flex;
   flex-wrap: wrap;

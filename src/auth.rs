@@ -56,6 +56,10 @@ impl AuthManager {
         self.client.login_url()
     }
 
+    pub fn has_saved_login(&self) -> Result<bool> {
+        Ok(self.store.read_egs_refresh()?.is_some())
+    }
+
     pub async fn authenticate_with_code(&self, code: &str) -> Result<EosTokenResponse> {
         let egs = self.client.authenticate_with_code(code.trim()).await?;
         self.store.save_egs_refresh(&egs.refresh_token)?;
