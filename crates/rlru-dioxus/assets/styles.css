@@ -412,6 +412,9 @@ small,
 
 .form-submit {
   align-self: end;
+  grid-column: span 2;
+  justify-self: start;
+  min-width: 12.5rem;
   white-space: nowrap;
 }
 
@@ -755,6 +758,9 @@ a.state-pill {
   }
 
   .form-submit {
+    grid-column: auto;
+    justify-self: stretch;
+    min-width: 0;
     width: 100%;
   }
 
