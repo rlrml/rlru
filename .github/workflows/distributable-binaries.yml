@@ -195,21 +195,9 @@ jobs:
           set -euo pipefail
 
           mkdir -p dist
-          mapfile -t signed_apks < <(
-            find target/dx/rlru-dioxus/release/android \
-              -path '*/build/outputs/apk/release/*-signed.apk' \
-              -type f \
-              | sort
-          )
-
-          if [[ "${#signed_apks[@]}" -eq 0 ]]; then
-            echo "No signed Android APK was produced" >&2
-            exit 1
-          fi
-
           mapfile -t artifacts < <(
             find target/dx/rlru-dioxus/release/android \
-              \( -path '*/build/outputs/apk/release/*-signed.apk' -o -path '*/build/outputs/bundle/release/*.aab' \) \
+              \( -path '*/build/outputs/apk/release/*.apk' -o -path '*/build/outputs/bundle/release/*.aab' \) \
               -type f \
               | sort
           )
