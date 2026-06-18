@@ -143,7 +143,7 @@ impl SyncRunState {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BackfillSummary {
     pub uploaded: usize,
     pub duplicates: usize,

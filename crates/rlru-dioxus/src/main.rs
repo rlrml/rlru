@@ -67,6 +67,159 @@ fn launch_app() {
     dioxus::launch(App);
 }
 
+#[derive(Clone, Copy)]
+struct UploadQueueSignals {
+    active_uploads: Signal<Vec<ActiveUpload>>,
+    running: Signal<bool>,
+    completed: Signal<usize>,
+    total: Signal<usize>,
+    sync_run: Signal<SyncRunState>,
+    message: Signal<String>,
+    failed_uploads: Signal<Vec<ReplayUploadRequest>>,
+    history_refresh_tick: Signal<u64>,
+}
+
+fn enqueue_uploads(requests: Vec<ReplayUploadRequest>, queue: UploadQueueSignals) {
+    let mut active_uploads = queue.active_uploads;
+    let mut upload_queue_running = queue.running;
+    let mut upload_queue_completed = queue.completed;
+    let mut upload_queue_total = queue.total;
+    let mut sync_run = queue.sync_run;
+    let mut history_message = queue.message;
+    let mut active = active_uploads();
+    let mut added = 0_usize;
+
+    for request in requests {
+        if active
+            .iter()
+            .any(|upload| is_same_upload_request(&upload.request, &request))
+        {
+            continue;
+        }
+        active.push(ActiveUpload::pending(request));
+        added += 1;
+    }
+
+    if added == 0 {
+        history_message.set("No new uploads to queue".to_string());
+        return;
+    }
+
+    let was_running = upload_queue_running();
+    active_uploads.set(active);
+    if was_running {
+        upload_queue_total.set(upload_queue_total().saturating_add(added));
+    } else {
+        upload_queue_completed.set(0);
+        upload_queue_total.set(added);
+        upload_queue_running.set(true);
+        sync_run.set(sync_run().started(now_label()));
+        spawn_upload_queue(queue);
+    }
+
+    history_message.set(format!("Queued {}", upload_count_label(added)));
+}
+
+fn spawn_upload_queue(queue: UploadQueueSignals) {
+    let mut active_uploads = queue.active_uploads;
+    let mut upload_queue_running = queue.running;
+    let mut upload_queue_completed = queue.completed;
+    let upload_queue_total = queue.total;
+    let mut sync_run = queue.sync_run;
+    let mut history_message = queue.message;
+    let mut failed_uploads = queue.failed_uploads;
+    let mut history_refresh_tick = queue.history_refresh_tick;
+
+    spawn(async move {
+        let mut aggregate = BackfillSummary::default();
+
+        while let Some(request) = next_queued_upload(&active_uploads()) {
+            mark_uploading(&mut active_uploads, &request);
+            history_message.set(format!(
+                "Downloading replay, fetching metadata, and uploading {} to {}",
+                short_match_id(&request.match_id),
+                request.target_name
+            ));
+
+            let run_summary = match upload_history_replay(request.clone()).await {
+                Ok(run_summary) => run_summary,
+                Err(error) => failed_upload_summary(&request, error),
+            };
+            update_failed_uploads(&mut failed_uploads, &request, &run_summary);
+            merge_backfill_summary(&mut aggregate, run_summary);
+            remove_active_upload(&mut active_uploads, &request);
+            upload_queue_completed.set(upload_queue_completed().saturating_add(1));
+            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
+            history_message.set(format!(
+                "Completed {} of {} queued uploads",
+                upload_queue_completed(),
+                upload_queue_total()
+            ));
+        }
+
+        upload_queue_running.set(false);
+        sync_run.set(sync_run().completed(now_label(), aggregate.clone()));
+        history_message.set(format_backfill_message(
+            format!(
+                "Upload queue complete: {} uploaded, {} duplicates, {} cached, {} failed",
+                aggregate.uploaded, aggregate.duplicates, aggregate.cached, aggregate.failed
+            ),
+            &aggregate.failed_uploads,
+        ));
+    });
+}
+
+fn next_queued_upload(active_uploads: &[ActiveUpload]) -> Option<ReplayUploadRequest> {
+    active_uploads
+        .iter()
+        .find(|upload| upload.phase == UploadPhase::Pending)
+        .map(|upload| upload.request.clone())
+}
+
+fn mark_uploading(active_uploads: &mut Signal<Vec<ActiveUpload>>, request: &ReplayUploadRequest) {
+    let updated = active_uploads()
+        .into_iter()
+        .map(|upload| {
+            if is_same_upload_request(&upload.request, request) {
+                ActiveUpload::uploading(upload.request)
+            } else {
+                upload
+            }
+        })
+        .collect();
+    active_uploads.set(updated);
+}
+
+fn remove_active_upload(
+    active_uploads: &mut Signal<Vec<ActiveUpload>>,
+    request: &ReplayUploadRequest,
+) {
+    let mut updated = active_uploads();
+    updated.retain(|upload| !is_same_upload_request(&upload.request, request));
+    active_uploads.set(updated);
+}
+
+fn update_failed_uploads(
+    failed_uploads: &mut Signal<Vec<ReplayUploadRequest>>,
+    request: &ReplayUploadRequest,
+    run_summary: &BackfillSummary,
+) {
+    let mut failures = failed_uploads();
+    failures.retain(|failure| !is_same_upload_request(failure, request));
+    for failure in &run_summary.failed_uploads {
+        upsert_failed_upload(&mut failures, failure.clone());
+    }
+    failed_uploads.set(failures);
+}
+
+fn upload_count_label(count: usize) -> String {
+    if count == 1 {
+        "1 upload".to_string()
+    } else {
+        format!("{count} uploads")
+    }
+}
+
 #[component]
 fn App() -> Element {
     let mut summary = use_signal(load_summary);
@@ -85,13 +238,26 @@ fn App() -> Element {
     let mut action_message = use_signal(String::new);
     let mut history_message = use_signal(String::new);
     let mut backfill_running = use_signal(|| false);
-    let mut active_upload = use_signal(|| None::<ActiveUpload>);
+    let active_uploads = use_signal(Vec::<ActiveUpload>::new);
+    let upload_queue_running = use_signal(|| false);
+    let upload_queue_completed = use_signal(|| 0_usize);
+    let upload_queue_total = use_signal(|| 0_usize);
     let mut sync_run = use_signal(SyncRunState::default);
     let mut failed_uploads = use_signal(Vec::<ReplayUploadRequest>::new);
     let account_auth_prompt = use_signal(|| None::<AccountAuthPrompt>);
     let account_auth_running = use_signal(|| false);
     let account_auth_task = use_signal(|| None::<Task>);
     let account_auth_attempt = use_signal(|| 0_u64);
+    let upload_queue = UploadQueueSignals {
+        active_uploads,
+        running: upload_queue_running,
+        completed: upload_queue_completed,
+        total: upload_queue_total,
+        sync_run,
+        message: history_message,
+        failed_uploads,
+        history_refresh_tick,
+    };
     let active = active_view();
     let mobile_nav_is_open = mobile_nav_open();
     let current_summary = summary();
@@ -104,7 +270,9 @@ fn App() -> Element {
     };
     let history_status = history_message();
     let is_backfill_running = backfill_running();
-    let current_active_upload = active_upload();
+    let current_active_uploads = active_uploads();
+    let current_upload_queue_completed = upload_queue_completed();
+    let current_upload_queue_total = upload_queue_total();
     let current_sync_run = sync_run();
     let current_failed_uploads = failed_uploads();
     let current_account_auth_prompt = account_auth_prompt();
@@ -164,49 +332,7 @@ fn App() -> Element {
                 history_message.set(String::new());
             },
             onretry: move |request: ReplayUploadRequest| {
-                active_upload.set(Some(ActiveUpload::pending(request.clone())));
-                sync_run.set(sync_run().started(now_label()));
-                history_message.set(format!(
-                    "Pending retry for {} to {}",
-                    short_match_id(&request.match_id),
-                    request.target_name
-                ));
-                spawn(async move {
-                    active_upload.set(Some(ActiveUpload::uploading(request.clone())));
-                    history_message.set(format!(
-                        "Retrying {} to {}",
-                        short_match_id(&request.match_id),
-                        request.target_name
-                    ));
-                    match upload_history_replay(request.clone()).await {
-                        Ok(run_summary) => {
-                            let mut failures = failed_uploads();
-                            failures.retain(|failure| !is_same_upload_request(failure, &request));
-                            for failure in &run_summary.failed_uploads {
-                                upsert_failed_upload(&mut failures, failure.clone());
-                            }
-                            failed_uploads.set(failures);
-                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
-                            history_message.set(format_backfill_message(
-                                format!(
-                                    "Retry to {} complete: {} uploaded, {} duplicates, {} cached, {} failed",
-                                    request.target_name,
-                                    run_summary.uploaded,
-                                    run_summary.duplicates,
-                                    run_summary.cached,
-                                    run_summary.failed
-                                ),
-                                &run_summary.failed_uploads,
-                            ));
-                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
-                        }
-                        Err(error) => {
-                            sync_run.set(sync_run().failed(now_label(), error.clone()));
-                            history_message.set(error);
-                        }
-                    }
-                    active_upload.set(None);
-                });
+                enqueue_uploads(vec![request], upload_queue);
             },
         }
         main {
@@ -270,86 +396,20 @@ fn App() -> Element {
                             history: current_history,
                             message: history_status,
                             backfill_running: is_backfill_running,
-                            active_upload: current_active_upload,
+                            active_uploads: current_active_uploads,
+                            queue_completed: current_upload_queue_completed,
+                            queue_total: current_upload_queue_total,
                             failed_uploads: current_failed_uploads,
                             onrefresh: move |_| {
                                 history_requested.set(true);
                                 history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                 history_message.set(String::new());
                             },
-                            onbackfill: move |_| {
-                                backfill_running.set(true);
-                                sync_run.set(sync_run().started(now_label()));
-                                history_message.set("Backfilling upload destinations from current RL API history".to_string());
-                                spawn(async move {
-                                    match backfill_upload_destinations().await {
-                                        Ok(run_summary) => {
-                                            failed_uploads.set(dedupe_upload_requests(run_summary.failed_uploads.clone()));
-                                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
-                                            history_message.set(format_backfill_message(
-                                                format!(
-                                                "Backfill complete: {} uploaded, {} duplicates, {} cached, {} failed",
-                                                run_summary.uploaded,
-                                                run_summary.duplicates,
-                                                run_summary.cached,
-                                                run_summary.failed
-                                                ),
-                                                &run_summary.failed_uploads,
-                                            ));
-                                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
-                                        }
-                                        Err(error) => {
-                                            sync_run.set(sync_run().failed(now_label(), error.clone()));
-                                            history_message.set(error);
-                                        }
-                                    }
-                                    backfill_running.set(false);
-                                });
+                            onbackfill: move |requests: Vec<ReplayUploadRequest>| {
+                                enqueue_uploads(requests, upload_queue);
                             },
                             onupload: move |request: ReplayUploadRequest| {
-                                active_upload.set(Some(ActiveUpload::pending(request.clone())));
-                                sync_run.set(sync_run().started(now_label()));
-                                history_message.set(format!(
-                                    "Pending upload for {} to {}",
-                                    short_match_id(&request.match_id),
-                                    request.target_name
-                                ));
-                                spawn(async move {
-                                    active_upload.set(Some(ActiveUpload::uploading(request.clone())));
-                                    history_message.set(format!(
-                                        "Uploading {} to {}",
-                                        short_match_id(&request.match_id),
-                                        request.target_name
-                                    ));
-                                    match upload_history_replay(request.clone()).await {
-                                        Ok(run_summary) => {
-                                            let mut failures = failed_uploads();
-                                            failures.retain(|failure| !is_same_upload_request(failure, &request));
-                                            for failure in &run_summary.failed_uploads {
-                                                upsert_failed_upload(&mut failures, failure.clone());
-                                            }
-                                            failed_uploads.set(failures);
-                                            sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
-                                            history_message.set(format_backfill_message(
-                                                format!(
-                                                "Upload to {} complete: {} uploaded, {} duplicates, {} cached, {} failed",
-                                                request.target_name,
-                                                run_summary.uploaded,
-                                                run_summary.duplicates,
-                                                run_summary.cached,
-                                                run_summary.failed
-                                                ),
-                                                &run_summary.failed_uploads,
-                                            ));
-                                            history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
-                                        }
-                                        Err(error) => {
-                                            sync_run.set(sync_run().failed(now_label(), error.clone()));
-                                            history_message.set(error);
-                                        }
-                                    }
-                                    active_upload.set(None);
-                                });
+                                enqueue_uploads(vec![request], upload_queue);
                             },
                         }
                     },

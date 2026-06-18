@@ -5,8 +5,8 @@ pub(crate) use rlru::app::{
     is_same_upload_request, load_history, load_summary, now_label, remove_account,
     save_auto_upload, save_overview_config, short_match_id, upload_failure_reason,
     upload_history_replay, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
-    HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
-    SyncRunState,
+    BackfillSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData,
+    ReplayUploadRequest, SyncRunState,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -73,6 +73,7 @@ pub(crate) struct HistoryUploadActivity {
     pub(crate) headline: String,
     pub(crate) detail: String,
     pub(crate) metrics: Vec<HistoryUploadMetric>,
+    pub(crate) progress: Option<HistoryUploadProgress>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -81,10 +82,17 @@ pub(crate) struct HistoryUploadMetric {
     pub(crate) value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HistoryUploadProgress {
+    pub(crate) completed: usize,
+    pub(crate) total: usize,
+    pub(crate) percent: usize,
+}
+
 pub(crate) fn history_upload_control(
     destination: &HistoryUploadDestination,
     match_id: &str,
-    active_upload: Option<&ActiveUpload>,
+    active_uploads: &[ActiveUpload],
     failed_uploads: &[ReplayUploadRequest],
     batch_running: bool,
 ) -> HistoryUploadControl {
@@ -106,8 +114,9 @@ pub(crate) fn history_upload_control(
         };
     }
 
-    let active_state = active_upload
-        .filter(|upload| upload.is_for(&destination.target_name, match_id))
+    let active_state = active_uploads
+        .iter()
+        .find(|upload| upload.is_for(&destination.target_name, match_id))
         .map(|upload| &upload.phase);
     let has_failed = failed_upload(failed_uploads, &destination.target_name, match_id).is_some();
     let label = upload_button_label(destination.uploaded, active_state, has_failed);
@@ -124,7 +133,7 @@ pub(crate) fn history_upload_control(
         class_name,
         label,
         title,
-        disabled: active_upload.is_some() || batch_running,
+        disabled: active_state.is_some() || batch_running,
         request: ReplayUploadRequest {
             target_name: destination.target_name.clone(),
             match_id: match_id.to_string(),
@@ -135,11 +144,22 @@ pub(crate) fn history_upload_control(
 
 pub(crate) fn history_upload_activity(
     rows: &[HistoryRow],
-    active_upload: Option<&ActiveUpload>,
+    active_uploads: &[ActiveUpload],
     failed_uploads: &[ReplayUploadRequest],
     batch_running: bool,
+    queue_completed: usize,
+    queue_total: usize,
 ) -> HistoryUploadActivity {
     let counts = HistoryUploadCounts::from_rows(rows, failed_uploads);
+    let queued_count = active_uploads
+        .iter()
+        .filter(|upload| upload.phase == UploadPhase::Pending)
+        .count();
+    let running_upload = active_uploads
+        .iter()
+        .find(|upload| upload.phase == UploadPhase::Uploading);
+    let active_count = active_uploads.len();
+    let progress = upload_progress(active_count, queue_completed, queue_total);
 
     let pending_work = counts.pending_work();
     let (class_name, headline, detail) = if batch_running {
@@ -155,18 +175,23 @@ pub(crate) fn history_upload_activity(
             },
             "Manual uploads are paused until this run finishes.".to_string(),
         )
-    } else if let Some(upload) = active_upload {
-        let phase = match upload.phase {
-            UploadPhase::Pending => "pending",
-            UploadPhase::Uploading => "running",
-        };
+    } else if let Some(upload) = running_upload {
         (
             "upload-activity upload-activity-running",
-            format!("1 upload {phase}"),
+            queue_headline(queue_completed, queue_total, active_count),
             format!(
-                "{} to {}",
+                "Downloading replay, fetching metadata, and uploading {} to {}",
                 short_match_id(&upload.request.match_id),
                 upload.request.target_name
+            ),
+        )
+    } else if queued_count > 0 {
+        (
+            "upload-activity upload-activity-running",
+            queue_headline(queue_completed, queue_total, active_count),
+            format!(
+                "{} queued and waiting to start.",
+                pluralize(queued_count, "upload")
             ),
         )
     } else if counts.visible_failures > 0 {
@@ -181,12 +206,8 @@ pub(crate) fn history_upload_activity(
     } else if pending_work > 0 {
         (
             "upload-activity",
-            format!(
-                "{} ready",
-                pluralize(pending_work, "visible upload")
-            ),
-            "Use Backfill Destinations to process them as one batch, or upload individual rows below."
-                .to_string(),
+            format!("{} ready", pluralize(pending_work, "visible upload")),
+            "Use Backfill Destinations to queue them, or upload individual rows below.".to_string(),
         )
     } else {
         (
@@ -214,10 +235,75 @@ pub(crate) fn history_upload_activity(
                 value: counts.open_links.to_string(),
             },
             HistoryUploadMetric {
+                label: "Queued",
+                value: active_count.to_string(),
+            },
+            HistoryUploadMetric {
                 label: "Failed",
                 value: counts.visible_failures.to_string(),
             },
         ],
+        progress,
+    }
+}
+
+pub(crate) fn history_upload_requests(
+    rows: &[HistoryRow],
+    active_uploads: &[ActiveUpload],
+) -> Vec<ReplayUploadRequest> {
+    let mut requests = Vec::new();
+    for row in rows {
+        for destination in &row.upload_destinations {
+            if !destination.upload_enabled || destination.location.is_some() {
+                continue;
+            }
+
+            let request = ReplayUploadRequest {
+                target_name: destination.target_name.clone(),
+                match_id: row.match_id.clone(),
+                reason: None,
+            };
+            if active_uploads
+                .iter()
+                .any(|upload| is_same_upload_request(&upload.request, &request))
+                || requests
+                    .iter()
+                    .any(|queued| is_same_upload_request(queued, &request))
+            {
+                continue;
+            }
+            requests.push(request);
+        }
+    }
+    requests
+}
+
+pub(crate) fn merge_backfill_summary(summary: &mut BackfillSummary, next: BackfillSummary) {
+    summary.uploaded += next.uploaded;
+    summary.duplicates += next.duplicates;
+    summary.cached += next.cached;
+    summary.failed += next.failed;
+    summary.failed_match_ids.extend(next.failed_match_ids);
+    for failed_upload in next.failed_uploads {
+        upsert_failed_upload(&mut summary.failed_uploads, failed_upload);
+    }
+}
+
+pub(crate) fn failed_upload_summary(
+    request: &ReplayUploadRequest,
+    reason: String,
+) -> BackfillSummary {
+    BackfillSummary {
+        uploaded: 0,
+        duplicates: 0,
+        cached: 0,
+        failed: 1,
+        failed_match_ids: vec![request.match_id.clone()],
+        failed_uploads: vec![ReplayUploadRequest {
+            target_name: request.target_name.clone(),
+            match_id: request.match_id.clone(),
+            reason: Some(reason),
+        }],
     }
 }
 
@@ -227,11 +313,11 @@ fn upload_button_label(
     has_failed: bool,
 ) -> &'static str {
     match (uploaded_without_location, active_state, has_failed) {
-        (true, Some(UploadPhase::Pending), _) => "Pending link",
+        (true, Some(UploadPhase::Pending), _) => "Queued link",
         (true, Some(UploadPhase::Uploading), _) => "Getting link",
         (true, None, true) => "Retry link",
         (true, None, false) => "Get link",
-        (false, Some(UploadPhase::Pending), _) => "Pending upload",
+        (false, Some(UploadPhase::Pending), _) => "Queued upload",
         (false, Some(UploadPhase::Uploading), _) => "Uploading",
         (false, None, true) => "Retry upload",
         (false, None, false) => "Upload",
@@ -258,6 +344,34 @@ fn upload_button_title(
         Some(UploadPhase::Uploading) => "Upload is in progress".to_string(),
         None if batch_running => "Batch upload is already running".to_string(),
         None => upload_failure_reason(failed_uploads, target_name, match_id),
+    }
+}
+
+fn upload_progress(
+    active_count: usize,
+    queue_completed: usize,
+    queue_total: usize,
+) -> Option<HistoryUploadProgress> {
+    if active_count == 0 || queue_total == 0 {
+        return None;
+    }
+
+    Some(HistoryUploadProgress {
+        completed: queue_completed.min(queue_total),
+        total: queue_total,
+        percent: queue_completed.saturating_mul(100) / queue_total,
+    })
+}
+
+fn queue_headline(queue_completed: usize, queue_total: usize, active_count: usize) -> String {
+    if queue_total > 1 {
+        format!(
+            "{} of {} uploads complete",
+            queue_completed.min(queue_total),
+            queue_total
+        )
+    } else {
+        format!("{} active", pluralize(active_count, "upload"))
     }
 }
 
@@ -468,7 +582,7 @@ impl SyncRunState {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BackfillSummary {
     pub(crate) uploaded: usize,
     pub(crate) duplicates: usize,
@@ -805,19 +919,14 @@ mod tests {
     fn pending_upload_has_distinct_button_state() {
         let active_upload = ActiveUpload::pending(request());
 
-        let control = history_upload_control(
-            &destination(false),
-            MATCH_ID,
-            Some(&active_upload),
-            &[],
-            false,
-        );
+        let control =
+            history_upload_control(&destination(false), MATCH_ID, &[active_upload], &[], false);
 
         assert_eq!(
             control,
             HistoryUploadControl::Button {
                 class_name: "compact-button upload-pending",
-                label: "Pending upload",
+                label: "Queued upload",
                 title: "Upload request is queued".to_string(),
                 disabled: true,
                 request: request(),
@@ -829,13 +938,8 @@ mod tests {
     fn running_upload_has_distinct_button_state() {
         let active_upload = ActiveUpload::uploading(request());
 
-        let control = history_upload_control(
-            &destination(false),
-            MATCH_ID,
-            Some(&active_upload),
-            &[],
-            false,
-        );
+        let control =
+            history_upload_control(&destination(false), MATCH_ID, &[active_upload], &[], false);
 
         assert_eq!(
             control,
@@ -853,19 +957,14 @@ mod tests {
     fn uploaded_without_location_uses_link_specific_labels() {
         let active_upload = ActiveUpload::pending(request());
 
-        let control = history_upload_control(
-            &destination(true),
-            MATCH_ID,
-            Some(&active_upload),
-            &[],
-            false,
-        );
+        let control =
+            history_upload_control(&destination(true), MATCH_ID, &[active_upload], &[], false);
 
         assert_eq!(
             control,
             HistoryUploadControl::Button {
                 class_name: "compact-button upload-pending",
-                label: "Pending link",
+                label: "Queued link",
                 title: "Upload request is queued".to_string(),
                 disabled: true,
                 request: request(),
@@ -875,7 +974,7 @@ mod tests {
 
     #[test]
     fn batch_upload_disables_individual_upload_buttons() {
-        let control = history_upload_control(&destination(false), MATCH_ID, None, &[], true);
+        let control = history_upload_control(&destination(false), MATCH_ID, &[], &[], true);
 
         assert_eq!(
             control,
@@ -927,7 +1026,7 @@ mod tests {
             },
         ];
 
-        let activity = history_upload_activity(&rows, None, &[request()], true);
+        let activity = history_upload_activity(&rows, &[], &[request()], true, 0, 0);
 
         assert_eq!(
             activity.class_name,
@@ -951,6 +1050,10 @@ mod tests {
                 HistoryUploadMetric {
                     label: "Open links",
                     value: "1".to_string(),
+                },
+                HistoryUploadMetric {
+                    label: "Queued",
+                    value: "0".to_string(),
                 },
                 HistoryUploadMetric {
                     label: "Failed",

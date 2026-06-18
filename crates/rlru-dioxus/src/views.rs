@@ -175,17 +175,30 @@ pub(crate) fn HistoryView(
     history: Option<Result<Vec<HistoryRow>, String>>,
     message: String,
     backfill_running: bool,
-    active_upload: Option<ActiveUpload>,
+    active_uploads: Vec<ActiveUpload>,
+    queue_completed: usize,
+    queue_total: usize,
     failed_uploads: Vec<ReplayUploadRequest>,
     onrefresh: EventHandler<()>,
-    onbackfill: EventHandler<()>,
+    onbackfill: EventHandler<Vec<ReplayUploadRequest>>,
     onupload: EventHandler<ReplayUploadRequest>,
 ) -> Element {
+    let backfill_requests = history
+        .as_ref()
+        .and_then(|history| history.as_ref().ok())
+        .map(|rows| history_upload_requests(rows, &active_uploads))
+        .unwrap_or_default();
+    let backfill_count = backfill_requests.len();
     let backfill_label = if backfill_running {
         "Backfilling..."
+    } else if backfill_count == 1 {
+        "Queue 1 Upload"
+    } else if backfill_count > 1 {
+        "Queue Backfill"
     } else {
         "Backfill Destinations"
     };
+    let backfill_disabled = backfill_running || backfill_count == 0;
 
     rsx! {
         section { class: "panel history-panel",
@@ -199,10 +212,10 @@ pub(crate) fn HistoryView(
                     }
                     button {
                         class: "primary-button",
-                        disabled: backfill_running,
+                        disabled: backfill_disabled,
                         onclick: move |_| {
-                            if !backfill_running {
-                                onbackfill.call(());
+                            if !backfill_disabled {
+                                onbackfill.call(backfill_requests.clone());
                             }
                         },
                         "{backfill_label}"
@@ -222,9 +235,11 @@ pub(crate) fn HistoryView(
                 Some(Ok(rows)) => {
                     let upload_activity = history_upload_activity(
                         &rows,
-                        active_upload.as_ref(),
+                        &active_uploads,
                         &failed_uploads,
                         backfill_running,
+                        queue_completed,
+                        queue_total,
                     );
                     rsx! {
                     if rows.is_empty() {
@@ -254,7 +269,7 @@ pub(crate) fn HistoryView(
                                                 match history_upload_control(
                                                     &destination,
                                                     &row.match_id,
-                                                    active_upload.as_ref(),
+                                                    &active_uploads,
                                                     &failed_uploads,
                                                     backfill_running,
                                                 ) {
@@ -308,11 +323,25 @@ pub(crate) fn HistoryView(
 
 #[component]
 pub(crate) fn UploadActivitySummary(activity: HistoryUploadActivity) -> Element {
+    let progress = activity.progress.clone();
     rsx! {
         div { class: "{activity.class_name}",
             div { class: "upload-activity-copy",
                 strong { "{activity.headline}" }
                 span { "{activity.detail}" }
+            }
+            if let Some(progress) = progress {
+                div { class: "upload-progress",
+                    div {
+                        class: "upload-progress-bar",
+                        aria_label: "Upload progress",
+                        div {
+                            class: "upload-progress-fill",
+                            style: "width: {progress.percent}%;",
+                        }
+                    }
+                    span { "{progress.completed}/{progress.total}" }
+                }
             }
             div { class: "upload-activity-metrics",
                 for metric in activity.metrics {
