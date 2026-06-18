@@ -10,7 +10,7 @@ use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use hmac::{Hmac, Mac};
 use reqwest::header::{HeaderMap, HeaderValue, CONTENT_TYPE, USER_AGENT};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::value::RawValue;
 use sha2::Sha256;
 use tokio::net::TcpStream;
@@ -433,7 +433,7 @@ pub struct MatchPlayer {
     pub saves: i64,
     #[serde(rename = "Shots")]
     pub shots: i64,
-    #[serde(rename = "Skills")]
+    #[serde(rename = "Skills", deserialize_with = "deserialize_null_default")]
     pub skills: MatchSkills,
 }
 
@@ -443,23 +443,23 @@ pub struct MatchPlayer {
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct MatchSkills {
-    #[serde(rename = "Mu")]
+    #[serde(rename = "Mu", deserialize_with = "deserialize_null_default")]
     pub mu: f64,
-    #[serde(rename = "Sigma")]
+    #[serde(rename = "Sigma", deserialize_with = "deserialize_null_default")]
     pub sigma: f64,
-    #[serde(rename = "Tier")]
+    #[serde(rename = "Tier", deserialize_with = "deserialize_null_default")]
     pub tier: i64,
-    #[serde(rename = "Division")]
+    #[serde(rename = "Division", deserialize_with = "deserialize_null_default")]
     pub division: i64,
-    #[serde(rename = "PrevMu")]
+    #[serde(rename = "PrevMu", deserialize_with = "deserialize_null_default")]
     pub prev_mu: f64,
-    #[serde(rename = "PrevSigma")]
+    #[serde(rename = "PrevSigma", deserialize_with = "deserialize_null_default")]
     pub prev_sigma: f64,
-    #[serde(rename = "PrevTier")]
+    #[serde(rename = "PrevTier", deserialize_with = "deserialize_null_default")]
     pub prev_tier: i64,
-    #[serde(rename = "PrevDivision")]
+    #[serde(rename = "PrevDivision", deserialize_with = "deserialize_null_default")]
     pub prev_division: i64,
-    #[serde(rename = "bValid")]
+    #[serde(rename = "bValid", deserialize_with = "deserialize_null_default")]
     pub valid: bool,
 }
 
@@ -498,23 +498,29 @@ pub struct PlayerWithSkills {
 #[derive(Debug, Clone, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct PlayerSkill {
-    #[serde(rename = "Playlist")]
+    #[serde(rename = "Playlist", deserialize_with = "deserialize_null_default")]
     pub playlist: i64,
-    #[serde(rename = "Mu")]
+    #[serde(rename = "Mu", deserialize_with = "deserialize_null_default")]
     pub mu: f64,
-    #[serde(rename = "Sigma")]
+    #[serde(rename = "Sigma", deserialize_with = "deserialize_null_default")]
     pub sigma: f64,
-    #[serde(rename = "Tier")]
+    #[serde(rename = "Tier", deserialize_with = "deserialize_null_default")]
     pub tier: i64,
-    #[serde(rename = "Division")]
+    #[serde(rename = "Division", deserialize_with = "deserialize_null_default")]
     pub division: i64,
-    #[serde(rename = "MMR")]
+    #[serde(rename = "MMR", deserialize_with = "deserialize_null_default")]
     pub mmr: f64,
-    #[serde(rename = "WinStreak")]
+    #[serde(rename = "WinStreak", deserialize_with = "deserialize_null_default")]
     pub win_streak: i64,
-    #[serde(rename = "MatchesPlayed")]
+    #[serde(
+        rename = "MatchesPlayed",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub matches_played: i64,
-    #[serde(rename = "PlacementMatchesPlayed")]
+    #[serde(
+        rename = "PlacementMatchesPlayed",
+        deserialize_with = "deserialize_null_default"
+    )]
     pub placement_matches_played: i64,
 }
 
@@ -691,6 +697,14 @@ fn parse_message(message: &str) -> Result<PsyResponse> {
     })
 }
 
+fn deserialize_null_default<'de, D, T>(deserializer: D) -> std::result::Result<T, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de> + Default,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +737,58 @@ mod tests {
 
         assert_eq!(response.response_id, "PsyNetMessage_X_1");
         assert_eq!(response.result.unwrap().get(), "{\"ok\":true}");
+    }
+
+    #[test]
+    fn match_history_accepts_null_skill_values() {
+        let response: GetMatchHistoryResponse = serde_json::from_str(
+            r#"{
+                "Matches": [
+                    {
+                        "ReplayUrl": "https://example.com/replay.replay",
+                        "Match": {
+                            "MatchGUID": "match-1",
+                            "RecordStartTimestamp": 1,
+                            "MapName": "Stadium_P",
+                            "Playlist": 11,
+                            "Team0Score": 1,
+                            "Team1Score": 2,
+                            "Players": [
+                                {
+                                    "PlayerID": "Epic|abc|0",
+                                    "PlayerName": "player",
+                                    "LastTeam": 0,
+                                    "TeamColor": "Blue",
+                                    "Score": 100,
+                                    "Goals": 1,
+                                    "Assists": 0,
+                                    "Saves": 0,
+                                    "Shots": 2,
+                                    "Skills": {
+                                        "Mu": null,
+                                        "Sigma": null,
+                                        "Tier": null,
+                                        "Division": null,
+                                        "PrevMu": null,
+                                        "PrevSigma": null,
+                                        "PrevTier": null,
+                                        "PrevDivision": null,
+                                        "bValid": null
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let skills = &response.matches[0].match_info.players[0].skills;
+        assert_eq!(skills.mu, 0.0);
+        assert_eq!(skills.prev_sigma, 0.0);
+        assert_eq!(skills.tier, 0);
+        assert!(!skills.valid);
     }
 
     #[test]
