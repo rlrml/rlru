@@ -71,6 +71,7 @@ fn launch_app() {
 fn App() -> Element {
     let mut summary = use_signal(load_summary);
     let mut active_view = use_signal(|| ActiveView::Overview);
+    let mut mobile_nav_open = use_signal(|| false);
     let mut history_requested = use_signal(|| false);
     let mut history_refresh_tick = use_signal(|| 0_u64);
     let history = use_resource(move || async move {
@@ -92,6 +93,7 @@ fn App() -> Element {
     let account_auth_task = use_signal(|| None::<Task>);
     let account_auth_attempt = use_signal(|| 0_u64);
     let active = active_view();
+    let mobile_nav_is_open = mobile_nav_open();
     let current_summary = summary();
     let message = action_message();
     let history_has_been_requested = history_requested();
@@ -211,7 +213,20 @@ fn App() -> Element {
             class: "shell",
             Sidebar {
                 active,
-                onselect: move |view| active_view.set(view),
+                open: mobile_nav_is_open,
+                onselect: move |view| {
+                    active_view.set(view);
+                    mobile_nav_open.set(false);
+                },
+                ontoggle: move |_| mobile_nav_open.set(!mobile_nav_open()),
+            }
+            if mobile_nav_is_open {
+                button {
+                    class: "nav-backdrop",
+                    r#type: "button",
+                    aria_label: "Close navigation",
+                    onclick: move |_| mobile_nav_open.set(false),
+                }
             }
             section {
                 class: "workspace",

@@ -4,11 +4,33 @@ use crate::model::*;
 use crate::ActiveView;
 
 #[component]
-pub(crate) fn Sidebar(active: ActiveView, onselect: EventHandler<ActiveView>) -> Element {
+pub(crate) fn Sidebar(
+    active: ActiveView,
+    open: bool,
+    onselect: EventHandler<ActiveView>,
+    ontoggle: EventHandler<()>,
+) -> Element {
+    let class = if open { "app-nav open" } else { "app-nav" };
+
     rsx! {
         aside {
-            class: "sidebar",
-            strong { "rlru" }
+            class: "{class}",
+            div { class: "nav-header",
+                div { class: "nav-title",
+                    strong { "rlru" }
+                    small { "Replay uploader" }
+                }
+                button {
+                    class: "mobile-nav-toggle",
+                    r#type: "button",
+                    aria_label: "Toggle navigation",
+                    aria_expanded: "{open}",
+                    onclick: move |_| ontoggle.call(()),
+                    span { aria_hidden: "true" }
+                    span { aria_hidden: "true" }
+                    span { aria_hidden: "true" }
+                }
+            }
             nav {
                 for view in ActiveView::ALL {
                     NavButton {

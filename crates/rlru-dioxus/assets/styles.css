@@ -4,12 +4,18 @@
   font-size: 15px;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
 }
 
 html,
 body {
   background: #f3f6f4;
+  max-width: 100%;
   min-height: 100%;
+  overflow-x: hidden;
 }
 
 * {
@@ -24,26 +30,76 @@ body {
   display: grid;
   grid-template-columns: 224px minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
   width: 100%;
 }
 
-.sidebar {
+.app-nav {
   background: #ffffff;
   border-right: 1px solid #d8e0dd;
+  bottom: 0;
   display: flex;
   flex-direction: column;
   gap: 22px;
+  left: 0;
+  overflow-y: auto;
   padding: 22px 16px;
+  position: fixed;
+  top: 0;
+  width: 224px;
+  z-index: 10;
 }
 
-.sidebar strong {
+.nav-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.nav-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.nav-title strong {
   font-size: 1.15rem;
 }
 
-.sidebar nav {
+.app-nav nav {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+.mobile-nav-toggle {
+  align-items: center;
+  background: #f7faf9;
+  border: 1px solid #cfdad7;
+  border-radius: 6px;
+  cursor: pointer;
+  display: none;
+  flex-direction: column;
+  gap: 4px;
+  height: 38px;
+  justify-content: center;
+  padding: 0;
+  width: 42px;
+}
+
+.mobile-nav-toggle span {
+  background: #2b3941;
+  border-radius: 999px;
+  display: block;
+  height: 2px;
+  width: 18px;
+}
+
+.nav-backdrop {
+  display: none;
 }
 
 .nav-button {
@@ -66,6 +122,7 @@ body {
 }
 
 .workspace {
+  grid-column: 2;
   max-width: 1120px;
   min-width: 0;
   padding: 24px 26px;
@@ -690,18 +747,79 @@ a.state-pill {
 
 @media (max-width: 760px) {
   .shell {
-    grid-template-columns: 1fr;
+    display: block;
+    touch-action: pan-y;
   }
 
-  .sidebar {
+  .app-nav {
+    bottom: auto;
     border-bottom: 1px solid #d8e0dd;
     border-right: 0;
-    padding: 14px 16px;
+    gap: 12px;
+    height: auto;
+    left: auto;
+    max-width: 100%;
+    overflow-y: visible;
+    padding:
+      calc(12px + var(--safe-area-top))
+      calc(16px + var(--safe-area-right))
+      12px
+      calc(16px + var(--safe-area-left));
+    position: sticky;
+    top: 0;
+    width: auto;
+    z-index: 20;
   }
 
-  .sidebar nav {
+  .nav-header {
+    align-items: center;
     flex-direction: row;
-    overflow-x: auto;
+    justify-content: space-between;
+  }
+
+  .mobile-nav-toggle {
+    display: flex;
+    flex: 0 0 auto;
+    order: -1;
+  }
+
+  .app-nav nav {
+    display: none;
+  }
+
+  .app-nav.open nav {
+    display: flex;
+  }
+
+  .app-nav.open {
+    bottom: 0;
+    border-bottom: 0;
+    border-right: 1px solid #d8e0dd;
+    box-shadow: 18px 0 34px rgba(24, 36, 43, 0.18);
+    height: 100vh;
+    height: 100dvh;
+    left: 0;
+    max-width: calc(100vw - 44px);
+    overflow-y: auto;
+    padding:
+      calc(18px + var(--safe-area-top))
+      16px
+      calc(18px + var(--safe-area-bottom))
+      calc(16px + var(--safe-area-left));
+    position: fixed;
+    top: 0;
+    width: 284px;
+    z-index: 30;
+  }
+
+  .nav-backdrop {
+    background: rgba(24, 36, 43, 0.28);
+    border: 0;
+    display: block;
+    inset: 0;
+    padding: 0;
+    position: fixed;
+    z-index: 25;
   }
 
   .nav-button {
@@ -709,7 +827,14 @@ a.state-pill {
   }
 
   .workspace {
-    padding: 18px 16px;
+    grid-column: auto;
+    max-width: 100vw;
+    overflow-x: hidden;
+    padding:
+      calc(18px + var(--safe-area-top))
+      calc(16px + var(--safe-area-right))
+      calc(18px + var(--safe-area-bottom))
+      calc(16px + var(--safe-area-left));
   }
 
   .destinations-panel {
