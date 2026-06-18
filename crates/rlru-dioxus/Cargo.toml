@@ -26,6 +26,7 @@ default = ["web"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop", "dep:futures-util", "dep:gdk", "dep:glib", "dep:gtk", "dep:image", "dep:ksni"]
 mobile = ["dioxus/mobile"]
+android = ["mobile"]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 chrono = { version = "0.4", features = ["clock"] }

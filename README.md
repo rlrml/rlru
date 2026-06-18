@@ -118,6 +118,7 @@ Either way, the tagged run:
   - `rlru-cli-linux-x86_64.tar.gz`
   - `rlru-cli-windows-x86_64.zip`
   - `rlru-dioxus-linux-x86_64.AppImage`
+  - `rlru-dioxus-android-*.apk` / `rlru-dioxus-android-*.aab`
 - publishes `psynet` then `rlru` to crates.io, when the `CARGO_REGISTRY_TOKEN`
   repository secret is configured (GitHub release assets are still created when
   that secret is absent).

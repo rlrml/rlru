@@ -82,3 +82,9 @@ dioxus-desktop *args:
       export GDK_BACKEND="${GDK_BACKEND:-wayland,x11}"
     fi
     {{dioxus_desktop_cmd}} "$@"
+
+dioxus-android-build *args:
+    nix run .#dioxus-android-debug -- "$@"
+
+dioxus-android-release *args:
+    nix run .#dioxus-android-release -- "$@"

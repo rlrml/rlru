@@ -149,6 +149,89 @@ jobs:
           path: dist/rlru-dioxus-linux-x86_64.AppImage
           if-no-files-found: error
 
+  android:
+    name: Android app release
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Configure Nix cache
+        uses: cachix/cachix-action@v15
+        with:
+          name: nix-community
+          skipPush: true
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-rlru-dioxus-android-gradle-${{ hashFiles('flake.lock', 'Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-rlru-dioxus-android-gradle-
+
+      - name: Build Android release APK and AAB
+        env:
+          ANDROID_SIGNING_KEYSTORE_BASE64: ${{ secrets.ANDROID_SIGNING_KEYSTORE_BASE64 }}
+          ANDROID_SIGNING_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEYSTORE_PASSWORD }}
+          ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+        run: nix run .#dioxus-android-release
+
+      - name: Stage Android artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          mapfile -t signed_apks < <(
+            find target/dx/rlru-dioxus/release/android \
+              -path '*/build/outputs/apk/release/*-signed.apk' \
+              -type f \
+              | sort
+          )
+
+          if [[ "${#signed_apks[@]}" -eq 0 ]]; then
+            echo "No signed Android APK was produced" >&2
+            exit 1
+          fi
+
+          mapfile -t artifacts < <(
+            find target/dx/rlru-dioxus/release/android \
+              \( -path '*/build/outputs/apk/release/*-signed.apk' -o -path '*/build/outputs/bundle/release/*.aab' \) \
+              -type f \
+              | sort
+          )
+
+          if [[ "${#artifacts[@]}" -eq 0 ]]; then
+            echo "No Android APK/AAB artifacts were produced" >&2
+            exit 1
+          fi
+
+          for artifact in "${artifacts[@]}"; do
+            cp -v "$artifact" "dist/rlru-dioxus-android-$(basename "$artifact")"
+          done
+
+          ls -lh dist
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlru-dioxus-android-release
+          path: dist/*
+          if-no-files-found: error
+
   cargo-package:
     name: Cargo package check
     runs-on: ubuntu-latest
@@ -289,6 +372,7 @@ jobs:
       - linux
       - windows
       - linux-appimage
+      - android
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
