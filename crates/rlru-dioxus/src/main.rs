@@ -259,6 +259,8 @@ fn App() -> Element {
     let mut mobile_nav_open = use_signal(|| false);
     let mut history_requested = use_signal(|| false);
     let mut history_refresh_tick = use_signal(|| 0_u64);
+    let mut last_history_rows = use_signal(|| None::<Vec<HistoryRow>>);
+    let mut history_error = use_signal(|| None::<String>);
     let history = use_resource(move || async move {
         if history_requested() {
             let _ = history_refresh_tick();
@@ -295,12 +297,28 @@ fn App() -> Element {
     let current_summary = summary();
     let message = action_message();
     let history_has_been_requested = history_requested();
+    let latest_history = history.cloned();
+    let cached_history = last_history_rows();
     let current_history = if history_has_been_requested || active == ActiveView::History {
-        history.cloned()
+        match latest_history.clone() {
+            Some(Ok(rows)) => Some(Ok(rows)),
+            Some(Err(error)) => match cached_history.clone() {
+                Some(rows) => Some(Ok(rows)),
+                None => Some(Err(error)),
+            },
+            None => cached_history.map(Ok),
+        }
     } else {
         Some(Ok(Vec::new()))
     };
-    let history_status = history_message();
+    let explicit_history_status = history_message();
+    let history_status = if explicit_history_status.is_empty() {
+        history_error()
+            .map(|error| format!("History refresh failed: {error}"))
+            .unwrap_or_default()
+    } else {
+        explicit_history_status
+    };
     let is_backfill_running = backfill_running();
     let current_active_uploads = active_uploads();
     let current_upload_queue_completed = upload_queue_completed();
@@ -317,14 +335,26 @@ fn App() -> Element {
         }
     });
 
-    use_effect(move || {
-        if let Some(Ok(rows)) = history.cloned() {
+    use_effect(move || match history.cloned() {
+        Some(Ok(rows)) => {
+            if last_history_rows() != Some(rows.clone()) {
+                last_history_rows.set(Some(rows.clone()));
+            }
+            if history_error().is_some() {
+                history_error.set(None);
+            }
+
             let current = active_uploads();
             let reconciled = reconcile_active_uploads_with_history(&current, &rows);
             if reconciled != current {
                 active_uploads.set(reconciled);
             }
         }
+        Some(Err(error)) if history_error() != Some(error.clone()) => {
+            history_error.set(Some(error));
+        }
+        Some(Err(_)) => {}
+        None => {}
     });
 
     rsx! {
@@ -370,6 +400,7 @@ fn App() -> Element {
             },
             onrefreshhistory: move |_| {
                 history_requested.set(true);
+                history_error.set(None);
                 history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                 history_message.set(String::new());
             },
@@ -444,6 +475,7 @@ fn App() -> Element {
                             failed_uploads: current_failed_uploads,
                             onrefresh: move |_| {
                                 history_requested.set(true);
+                                history_error.set(None);
                                 history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                                 history_message.set(String::new());
                             },

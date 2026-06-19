@@ -512,7 +512,9 @@ mod tests {
 
     #[test]
     fn tray_left_click_activates_window_instead_of_menu() {
-        assert!(!<RlruTrayItem as ksni::Tray>::MENU_ON_ACTIVATE);
+        const {
+            assert!(!<RlruTrayItem as ksni::Tray>::MENU_ON_ACTIVATE);
+        }
     }
 }
 
