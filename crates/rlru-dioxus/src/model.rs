@@ -21,6 +21,7 @@ pub(crate) use rlru::app::{
 pub(crate) enum UploadPhase {
     Pending,
     Uploading,
+    Refreshing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -41,6 +42,13 @@ impl ActiveUpload {
         Self {
             request,
             phase: UploadPhase::Uploading,
+        }
+    }
+
+    pub(crate) fn refreshing(request: ReplayUploadRequest) -> Self {
+        Self {
+            request,
+            phase: UploadPhase::Refreshing,
         }
     }
 
@@ -155,6 +163,10 @@ pub(crate) fn history_upload_activity(
         .iter()
         .filter(|upload| upload.phase == UploadPhase::Pending)
         .count();
+    let refreshing_count = active_uploads
+        .iter()
+        .filter(|upload| upload.phase == UploadPhase::Refreshing)
+        .count();
     let running_upload = active_uploads
         .iter()
         .find(|upload| upload.phase == UploadPhase::Uploading);
@@ -193,6 +205,19 @@ pub(crate) fn history_upload_activity(
                 "{} queued and waiting to start.",
                 pluralize(queued_count, "upload")
             ),
+        )
+    } else if refreshing_count > 0 {
+        (
+            "upload-activity upload-activity-running",
+            queue_headline(queue_completed, queue_total, active_count),
+            if refreshing_count == 1 {
+                "Refreshing upload status and link.".to_string()
+            } else {
+                format!(
+                    "Refreshing status and links for {}.",
+                    pluralize(refreshing_count, "upload")
+                )
+            },
         )
     } else if counts.visible_failures > 0 {
         (
@@ -278,6 +303,20 @@ pub(crate) fn history_upload_requests(
     requests
 }
 
+pub(crate) fn reconcile_active_uploads_with_history(
+    active_uploads: &[ActiveUpload],
+    rows: &[HistoryRow],
+) -> Vec<ActiveUpload> {
+    active_uploads
+        .iter()
+        .filter(|upload| {
+            upload.phase != UploadPhase::Refreshing
+                || !history_contains_uploaded_destination(rows, &upload.request)
+        })
+        .cloned()
+        .collect()
+}
+
 pub(crate) fn merge_backfill_summary(summary: &mut BackfillSummary, next: BackfillSummary) {
     summary.uploaded += next.uploaded;
     summary.duplicates += next.duplicates;
@@ -315,10 +354,12 @@ fn upload_button_label(
     match (uploaded_without_location, active_state, has_failed) {
         (true, Some(UploadPhase::Pending), _) => "Queued link",
         (true, Some(UploadPhase::Uploading), _) => "Getting link",
+        (true, Some(UploadPhase::Refreshing), _) => "Getting link",
         (true, None, true) => "Retry link",
         (true, None, false) => "Get link",
         (false, Some(UploadPhase::Pending), _) => "Queued upload",
         (false, Some(UploadPhase::Uploading), _) => "Uploading",
+        (false, Some(UploadPhase::Refreshing), _) => "Getting link",
         (false, None, true) => "Retry upload",
         (false, None, false) => "Upload",
     }
@@ -327,7 +368,7 @@ fn upload_button_label(
 fn upload_button_class(active_state: Option<&UploadPhase>) -> &'static str {
     match active_state {
         Some(UploadPhase::Pending) => "compact-button upload-pending",
-        Some(UploadPhase::Uploading) => "compact-button upload-running",
+        Some(UploadPhase::Uploading | UploadPhase::Refreshing) => "compact-button upload-running",
         None => "compact-button",
     }
 }
@@ -342,9 +383,24 @@ fn upload_button_title(
     match active_state {
         Some(UploadPhase::Pending) => "Upload request is queued".to_string(),
         Some(UploadPhase::Uploading) => "Upload is in progress".to_string(),
+        Some(UploadPhase::Refreshing) => "Refreshing upload status and link".to_string(),
         None if batch_running => "Batch upload is already running".to_string(),
         None => upload_failure_reason(failed_uploads, target_name, match_id),
     }
+}
+
+fn history_contains_uploaded_destination(
+    rows: &[HistoryRow],
+    request: &ReplayUploadRequest,
+) -> bool {
+    rows.iter()
+        .find(|row| row.match_id == request.match_id)
+        .and_then(|row| {
+            row.upload_destinations
+                .iter()
+                .find(|destination| destination.target_name == request.target_name)
+        })
+        .is_some_and(|destination| destination.uploaded)
 }
 
 fn upload_progress(
@@ -954,6 +1010,25 @@ mod tests {
     }
 
     #[test]
+    fn refreshing_upload_keeps_button_disabled_while_history_is_stale() {
+        let active_upload = ActiveUpload::refreshing(request());
+
+        let control =
+            history_upload_control(&destination(false), MATCH_ID, &[active_upload], &[], false);
+
+        assert_eq!(
+            control,
+            HistoryUploadControl::Button {
+                class_name: "compact-button upload-running",
+                label: "Getting link",
+                title: "Refreshing upload status and link".to_string(),
+                disabled: true,
+                request: request(),
+            }
+        );
+    }
+
+    #[test]
     fn uploaded_without_location_uses_link_specific_labels() {
         let active_upload = ActiveUpload::pending(request());
 
@@ -969,6 +1044,40 @@ mod tests {
                 disabled: true,
                 request: request(),
             }
+        );
+    }
+
+    #[test]
+    fn refreshed_history_clears_completed_uploads() {
+        let stale_history = vec![HistoryRow {
+            account: "Primary".to_string(),
+            match_id: MATCH_ID.to_string(),
+            timestamp: "now".to_string(),
+            map_name: "DFH Stadium".to_string(),
+            playlist: "13".to_string(),
+            score: "3-2".to_string(),
+            upload_destinations: vec![destination(false)],
+        }];
+        let refreshed_history = vec![HistoryRow {
+            upload_destinations: vec![destination(true)],
+            ..stale_history[0].clone()
+        }];
+        let active = vec![
+            ActiveUpload::pending(ReplayUploadRequest {
+                target_name: "Ballchasing".to_string(),
+                match_id: MATCH_ID.to_string(),
+                reason: None,
+            }),
+            ActiveUpload::refreshing(request()),
+        ];
+
+        assert_eq!(
+            reconcile_active_uploads_with_history(&active, &stale_history),
+            active
+        );
+        assert_eq!(
+            reconcile_active_uploads_with_history(&active, &refreshed_history),
+            vec![active[0].clone()]
         );
     }
 

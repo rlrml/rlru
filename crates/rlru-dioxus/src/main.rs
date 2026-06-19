@@ -146,8 +146,13 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
                 Err(error) => failed_upload_summary(&request, error),
             };
             update_failed_uploads(&mut failed_uploads, &request, &run_summary);
+            let wait_for_history = upload_should_wait_for_history(&request, &run_summary);
             merge_backfill_summary(&mut aggregate, run_summary);
-            remove_active_upload(&mut active_uploads, &request);
+            if wait_for_history {
+                mark_refreshing(&mut active_uploads, &request);
+            } else {
+                remove_active_upload(&mut active_uploads, &request);
+            }
             upload_queue_completed.set(upload_queue_completed().saturating_add(1));
             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
             history_message.set(format!(
@@ -190,6 +195,20 @@ fn mark_uploading(active_uploads: &mut Signal<Vec<ActiveUpload>>, request: &Repl
     active_uploads.set(updated);
 }
 
+fn mark_refreshing(active_uploads: &mut Signal<Vec<ActiveUpload>>, request: &ReplayUploadRequest) {
+    let updated = active_uploads()
+        .into_iter()
+        .map(|upload| {
+            if is_same_upload_request(&upload.request, request) {
+                ActiveUpload::refreshing(upload.request)
+            } else {
+                upload
+            }
+        })
+        .collect();
+    active_uploads.set(updated);
+}
+
 fn remove_active_upload(
     active_uploads: &mut Signal<Vec<ActiveUpload>>,
     request: &ReplayUploadRequest,
@@ -210,6 +229,19 @@ fn update_failed_uploads(
         upsert_failed_upload(&mut failures, failure.clone());
     }
     failed_uploads.set(failures);
+}
+
+fn upload_should_wait_for_history(
+    request: &ReplayUploadRequest,
+    run_summary: &BackfillSummary,
+) -> bool {
+    let completed = run_summary.uploaded + run_summary.duplicates + run_summary.cached > 0;
+    let failed = run_summary
+        .failed_uploads
+        .iter()
+        .any(|failure| is_same_upload_request(failure, request));
+
+    completed && !failed
 }
 
 fn upload_count_label(count: usize) -> String {
@@ -238,7 +270,7 @@ fn App() -> Element {
     let mut action_message = use_signal(String::new);
     let mut history_message = use_signal(String::new);
     let mut backfill_running = use_signal(|| false);
-    let active_uploads = use_signal(Vec::<ActiveUpload>::new);
+    let mut active_uploads = use_signal(Vec::<ActiveUpload>::new);
     let upload_queue_running = use_signal(|| false);
     let upload_queue_completed = use_signal(|| 0_usize);
     let upload_queue_total = use_signal(|| 0_usize);
@@ -282,6 +314,16 @@ fn App() -> Element {
     use_effect(move || {
         if active_view() == ActiveView::History && !history_requested() {
             history_requested.set(true);
+        }
+    });
+
+    use_effect(move || {
+        if let Some(Ok(rows)) = history.cloned() {
+            let current = active_uploads();
+            let reconciled = reconcile_active_uploads_with_history(&current, &rows);
+            if reconciled != current {
+                active_uploads.set(reconciled);
+            }
         }
     });
 
