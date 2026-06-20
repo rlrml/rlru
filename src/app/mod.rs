@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 mod format;
@@ -13,6 +14,8 @@ use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform};
 use crate::paths::AppPaths;
 use crate::sync::{SyncOptions, SyncService};
 use crate::Config;
+
+pub const MAX_CONCURRENT_UPLOADS: usize = crate::sync::MAX_CONCURRENT_UPLOADS;
 
 struct AppContext {
     paths: AppPaths,
@@ -191,22 +194,63 @@ pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
 pub async fn upload_history_replay(
     request: ReplayUploadRequest,
 ) -> Result<BackfillSummary, String> {
-    let summary = AppContext::load(true)?
-        .sync_service()
-        .run_once_with_options(SyncOptions {
-            include_online: true,
-            target_name: Some(request.target_name),
-            force: true,
-            match_ids: vec![request.match_id],
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    upload_history_replays(vec![request]).await
+}
 
-    if summary.matches_seen == 0 {
-        return Err("No matching replay was found in current RL API history".to_string());
+pub async fn upload_history_replays(
+    requests: Vec<ReplayUploadRequest>,
+) -> Result<BackfillSummary, String> {
+    if requests.is_empty() {
+        return Ok(BackfillSummary::default());
     }
 
-    Ok(summary.into())
+    let context = AppContext::load(true)?;
+    let mut aggregate = BackfillSummary::default();
+
+    for (target_name, match_ids) in grouped_upload_requests(requests) {
+        let summary = SyncService::new(context.paths.clone(), context.config.clone())
+            .run_once_with_options(SyncOptions {
+                include_online: true,
+                target_name: Some(target_name),
+                force: true,
+                match_ids,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+
+        if summary.matches_seen == 0 {
+            return Err("No matching replay was found in current RL API history".to_string());
+        }
+
+        merge_backfill_summary(&mut aggregate, summary.into());
+    }
+
+    Ok(aggregate)
+}
+
+fn grouped_upload_requests(requests: Vec<ReplayUploadRequest>) -> BTreeMap<String, Vec<String>> {
+    let mut grouped = BTreeMap::<String, BTreeSet<String>>::new();
+    for request in requests {
+        grouped
+            .entry(request.target_name)
+            .or_default()
+            .insert(request.match_id);
+    }
+    grouped
+        .into_iter()
+        .map(|(target_name, match_ids)| (target_name, match_ids.into_iter().collect()))
+        .collect()
+}
+
+fn merge_backfill_summary(summary: &mut BackfillSummary, next: BackfillSummary) {
+    summary.uploaded += next.uploaded;
+    summary.duplicates += next.duplicates;
+    summary.cached += next.cached;
+    summary.failed += next.failed;
+    summary.failed_match_ids.extend(next.failed_match_ids);
+    for failed_upload in next.failed_uploads {
+        upsert_failed_upload(&mut summary.failed_uploads, failed_upload);
+    }
 }
 
 pub fn add_account(input: AccountFormData) -> Result<AppSummary, String> {

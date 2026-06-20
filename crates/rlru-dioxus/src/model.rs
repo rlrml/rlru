@@ -4,9 +4,9 @@ pub(crate) use rlru::app::{
     failed_upload, finish_account_auth, format_backfill_message, is_same_upload,
     is_same_upload_request, load_history, load_summary, now_label, remove_account,
     save_auto_upload, save_overview_config, short_match_id, upload_failure_reason,
-    upload_history_replay, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
+    upload_history_replays, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
     BackfillSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData,
-    ReplayUploadRequest, SyncRunState,
+    ReplayUploadRequest, SyncRunState, MAX_CONCURRENT_UPLOADS,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -649,6 +649,9 @@ pub(crate) struct BackfillSummary {
 }
 
 #[cfg(target_arch = "wasm32")]
+pub(crate) const MAX_CONCURRENT_UPLOADS: usize = 3;
+
+#[cfg(target_arch = "wasm32")]
 pub(crate) fn now_label() -> String {
     "now".to_string()
 }
@@ -805,6 +808,21 @@ pub(crate) async fn upload_history_replay(
 ) -> Result<BackfillSummary, String> {
     Ok(BackfillSummary {
         uploaded: 1,
+        duplicates: 0,
+        cached: 0,
+        failed: 0,
+        failed_match_ids: Vec::new(),
+        failed_uploads: Vec::new(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn upload_history_replays(
+    requests: Vec<ReplayUploadRequest>,
+) -> Result<BackfillSummary, String> {
+    let uploaded = requests.len();
+    Ok(BackfillSummary {
+        uploaded,
         duplicates: 0,
         cached: 0,
         failed: 0,

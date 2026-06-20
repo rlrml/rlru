@@ -133,27 +133,33 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
     spawn(async move {
         let mut aggregate = BackfillSummary::default();
 
-        while let Some(request) = next_queued_upload(&active_uploads()) {
-            mark_uploading(&mut active_uploads, &request);
-            history_message.set(format!(
-                "Downloading replay, fetching metadata, and uploading {} to {}",
-                short_match_id(&request.match_id),
-                request.target_name
-            ));
-
-            let run_summary = match upload_history_replay(request.clone()).await {
-                Ok(run_summary) => run_summary,
-                Err(error) => failed_upload_summary(&request, error),
-            };
-            update_failed_uploads(&mut failed_uploads, &request, &run_summary);
-            let wait_for_history = upload_should_wait_for_history(&request, &run_summary);
-            merge_backfill_summary(&mut aggregate, run_summary);
-            if wait_for_history {
-                mark_refreshing(&mut active_uploads, &request);
-            } else {
-                remove_active_upload(&mut active_uploads, &request);
+        loop {
+            let batch = next_queued_uploads(&active_uploads(), MAX_CONCURRENT_UPLOADS);
+            if batch.is_empty() {
+                break;
             }
-            upload_queue_completed.set(upload_queue_completed().saturating_add(1));
+
+            for request in &batch {
+                mark_uploading(&mut active_uploads, request);
+            }
+            history_message.set(upload_batch_message(&batch));
+
+            let run_summary = match upload_history_replays(batch.clone()).await {
+                Ok(run_summary) => run_summary,
+                Err(error) => failed_upload_batch_summary(&batch, error),
+            };
+            for request in &batch {
+                update_failed_uploads(&mut failed_uploads, request, &run_summary);
+            }
+            for request in &batch {
+                if upload_should_wait_for_history(request, &run_summary) {
+                    mark_refreshing(&mut active_uploads, request);
+                } else {
+                    remove_active_upload(&mut active_uploads, request);
+                }
+            }
+            merge_backfill_summary(&mut aggregate, run_summary);
+            upload_queue_completed.set(upload_queue_completed().saturating_add(batch.len()));
             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
             history_message.set(format!(
                 "Completed {} of {} queued uploads",
@@ -174,11 +180,33 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
     });
 }
 
-fn next_queued_upload(active_uploads: &[ActiveUpload]) -> Option<ReplayUploadRequest> {
+fn next_queued_uploads(active_uploads: &[ActiveUpload], limit: usize) -> Vec<ReplayUploadRequest> {
     active_uploads
         .iter()
-        .find(|upload| upload.phase == UploadPhase::Pending)
+        .filter(|upload| upload.phase == UploadPhase::Pending)
+        .take(limit)
         .map(|upload| upload.request.clone())
+        .collect()
+}
+
+fn upload_batch_message(batch: &[ReplayUploadRequest]) -> String {
+    if let [request] = batch {
+        format!(
+            "Downloading replay, fetching metadata, and uploading {} to {}",
+            short_match_id(&request.match_id),
+            request.target_name
+        )
+    } else {
+        format!("Starting {} concurrently", upload_count_label(batch.len()))
+    }
+}
+
+fn failed_upload_batch_summary(requests: &[ReplayUploadRequest], error: String) -> BackfillSummary {
+    let mut summary = BackfillSummary::default();
+    for request in requests {
+        merge_backfill_summary(&mut summary, failed_upload_summary(request, error.clone()));
+    }
+    summary
 }
 
 fn mark_uploading(active_uploads: &mut Signal<Vec<ActiveUpload>>, request: &ReplayUploadRequest) {

@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use secrecy::ExposeSecret;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use tokio::task::JoinSet;
 
 use crate::auth::AuthManager;
 use crate::auth::EosTokenResponse;
@@ -17,10 +18,12 @@ use crate::upload::{
     ReplayUploader, UploadCache, UploadOutcome,
 };
 
+pub const MAX_CONCURRENT_UPLOADS: usize = 3;
+
 /// Current per-playlist skills keyed by the full PsyNet PlayerID string, as
 /// fetched once per sync from `Skills/GetPlayersSkills`, together with the time
 /// the fetch happened so downstream consumers can reason about staleness.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct PlayerSkillIndex {
     /// Unix epoch (seconds) when the snapshot was fetched, or `None` when no
     /// fetch succeeded (in which case `skills` is empty).
@@ -315,6 +318,7 @@ impl SyncService {
         let requested_match_ids = normalized_match_ids(&options.match_ids);
         let mut targets = self.upload_target_states(options.target_name.as_deref())?;
 
+        let mut upload_jobs = JoinSet::new();
         for replay in &matches {
             let match_id = &replay.match_info.match_guid;
             if !requested_match_ids.is_empty()
@@ -350,22 +354,6 @@ impl SyncService {
                 continue;
             }
 
-            let downloaded_replay = match self.download_replay(replay).await {
-                Ok(path) => path,
-                Err(error) => {
-                    for index in pending_target_indexes {
-                        record_failed_upload(
-                            &mut summary,
-                            &targets[index].config.name,
-                            match_id,
-                            format!("download failed: {}", error_chain(&error)),
-                        );
-                    }
-                    tracing::warn!(%error, match_id, "failed to download replay");
-                    continue;
-                }
-            };
-
             let upload_name = crate::upload_name::render_upload_name(
                 name_template,
                 replay,
@@ -373,98 +361,154 @@ impl SyncService {
                 &account.name,
             );
 
-            for index in pending_target_indexes {
-                let target = &mut targets[index];
-                let UploadTargetAuth::Available(auth_header) = &target.auth else {
-                    continue;
-                };
-                let auth_header = auth_header.clone();
-                // For destinations that bundle ranks into the upload (Rocket
-                // Sense), build the rich payload and attach it to the same
-                // request. Endpoint-mode destinations (Ballchasing) post
-                // separately after the upload, below.
-                let rank_bundle = match &target.config.rank_upload {
-                    RankUploadConfig::Bundled { .. } => {
-                        Some(build_rank_bundle(replay, player_skills))
-                    }
-                    _ => None,
-                };
-                let result = self
-                    .uploader
-                    .upload_replay_with_auth_header(
-                        target.config,
-                        downloaded_replay.path(),
-                        Some(match_id),
-                        upload_name.as_deref(),
-                        auth_header.clone(),
-                        rank_bundle.as_ref(),
-                    )
-                    .await;
-
-                let stored = match result {
-                    Ok(result) if result.outcome == UploadOutcome::Uploaded => {
-                        summary.uploaded += 1;
-                        target
-                            .cache
-                            .add_with_location(match_id.clone(), result.location)?;
-                        true
-                    }
-                    Ok(result) if result.outcome == UploadOutcome::Duplicate => {
-                        summary.duplicates += 1;
-                        target
-                            .cache
-                            .add_with_location(match_id.clone(), result.location)?;
-                        true
-                    }
-                    Ok(_) => {
-                        summary.skipped += 1;
-                        false
-                    }
-                    Err(error) => {
-                        record_failed_upload(
-                            &mut summary,
-                            &target.config.name,
-                            match_id,
-                            format!("upload failed: {}", error_chain(&error)),
-                        );
-                        tracing::warn!(
-                            %error,
-                            match_id,
-                            target = %target.config.name,
-                            "failed to upload replay"
-                        );
-                        false
-                    }
-                };
-
-                if stored {
-                    if let RankUploadConfig::Endpoint { .. } = &target.config.rank_upload {
-                        let payload = build_mmr_upload(replay);
-                        if !payload.players.is_empty() {
-                            if let Err(error) = self
-                                .uploader
-                                .upload_mmr_with_auth_header(
-                                    target.config,
-                                    &payload,
-                                    match_id,
-                                    auth_header,
-                                )
-                                .await
-                            {
-                                tracing::warn!(
-                                    %error,
-                                    match_id,
-                                    target = %target.config.name,
-                                    "failed to upload player rank metadata"
-                                );
-                            }
+            let target_jobs = pending_target_indexes
+                .into_iter()
+                .filter_map(|index| {
+                    let target = &targets[index];
+                    let UploadTargetAuth::Available(auth_header) = &target.auth else {
+                        return None;
+                    };
+                    // For destinations that bundle ranks into the upload (Rocket
+                    // Sense), build the rich payload and attach it to the same
+                    // request. Endpoint-mode destinations (Ballchasing) post
+                    // separately after the upload, below.
+                    let rank_bundle = match &target.config.rank_upload {
+                        RankUploadConfig::Bundled { .. } => {
+                            Some(build_rank_bundle(replay, player_skills))
                         }
-                    }
-                }
+                        _ => None,
+                    };
+                    Some(ReplayUploadTargetJob {
+                        target_index: index,
+                        target: target.config.clone(),
+                        auth_header: auth_header.clone(),
+                        rank_bundle,
+                    })
+                })
+                .collect::<Vec<_>>();
+
+            if target_jobs.is_empty() {
+                continue;
+            }
+
+            let job = ReplayUploadJob {
+                replay: replay.clone(),
+                upload_name,
+                targets: target_jobs,
+            };
+            self.spawn_upload_job(&mut upload_jobs, job);
+
+            if upload_jobs.len() >= MAX_CONCURRENT_UPLOADS {
+                complete_next_upload_job(&mut upload_jobs, &mut summary, &mut targets).await?;
             }
         }
 
+        while !upload_jobs.is_empty() {
+            complete_next_upload_job(&mut upload_jobs, &mut summary, &mut targets).await?;
+        }
+
         Ok(summary)
+    }
+
+    fn spawn_upload_job(
+        &self,
+        upload_jobs: &mut JoinSet<ReplayUploadJobResult>,
+        job: ReplayUploadJob,
+    ) {
+        let service = self.clone();
+        upload_jobs.spawn(async move { service.run_upload_job(job).await });
+    }
+
+    async fn run_upload_job(&self, job: ReplayUploadJob) -> ReplayUploadJobResult {
+        let match_id = job.replay.match_info.match_guid.clone();
+        let downloaded_replay = match self.download_replay(&job.replay).await {
+            Ok(path) => path,
+            Err(error) => {
+                let reason = format!("download failed: {}", error_chain(&error));
+                tracing::warn!(%error, match_id, "failed to download replay");
+                return ReplayUploadJobResult {
+                    match_id,
+                    results: job
+                        .targets
+                        .into_iter()
+                        .map(|target| ReplayUploadTargetResult::Failed {
+                            target_name: target.target.name,
+                            reason: reason.clone(),
+                        })
+                        .collect(),
+                };
+            }
+        };
+
+        let mut results = Vec::with_capacity(job.targets.len());
+        for target in job.targets {
+            let result = self
+                .uploader
+                .upload_replay_with_auth_header(
+                    &target.target,
+                    downloaded_replay.path(),
+                    Some(&match_id),
+                    job.upload_name.as_deref(),
+                    target.auth_header.clone(),
+                    target.rank_bundle.as_ref(),
+                )
+                .await;
+
+            let upload_result = match result {
+                Ok(result) => {
+                    let stored = matches!(
+                        result.outcome,
+                        UploadOutcome::Uploaded | UploadOutcome::Duplicate
+                    );
+                    let outcome = result.outcome;
+                    let location = result.location;
+                    if stored {
+                        if let RankUploadConfig::Endpoint { .. } = &target.target.rank_upload {
+                            let payload = build_mmr_upload(&job.replay);
+                            if !payload.players.is_empty() {
+                                if let Err(error) = self
+                                    .uploader
+                                    .upload_mmr_with_auth_header(
+                                        &target.target,
+                                        &payload,
+                                        &match_id,
+                                        target.auth_header,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        %error,
+                                        match_id,
+                                        target = %target.target.name,
+                                        "failed to upload player rank metadata"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    ReplayUploadTargetResult::Completed {
+                        target_index: target.target_index,
+                        outcome,
+                        location,
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        match_id,
+                        target = %target.target.name,
+                        "failed to upload replay"
+                    );
+                    ReplayUploadTargetResult::Failed {
+                        target_name: target.target.name,
+                        reason: format!("upload failed: {}", error_chain(&error)),
+                    }
+                }
+            };
+            results.push(upload_result);
+        }
+
+        ReplayUploadJobResult { match_id, results }
     }
 
     fn upload_target_states(
@@ -758,6 +802,50 @@ fn record_failed_upload(
     });
 }
 
+async fn complete_next_upload_job(
+    upload_jobs: &mut JoinSet<ReplayUploadJobResult>,
+    summary: &mut SyncSummary,
+    targets: &mut [UploadTargetState<'_>],
+) -> Result<()> {
+    let result = upload_jobs
+        .join_next()
+        .await
+        .context("upload job set unexpectedly empty")?
+        .context("upload job failed to complete")?;
+
+    for upload_result in result.results {
+        match upload_result {
+            ReplayUploadTargetResult::Completed {
+                target_index,
+                outcome,
+                location,
+            } => match outcome {
+                UploadOutcome::Uploaded => {
+                    summary.uploaded += 1;
+                    targets[target_index]
+                        .cache
+                        .add_with_location(result.match_id.clone(), location)?;
+                }
+                UploadOutcome::Duplicate => {
+                    summary.duplicates += 1;
+                    targets[target_index]
+                        .cache
+                        .add_with_location(result.match_id.clone(), location)?;
+                }
+                UploadOutcome::Skipped => {
+                    summary.skipped += 1;
+                }
+            },
+            ReplayUploadTargetResult::Failed {
+                target_name,
+                reason,
+            } => record_failed_upload(summary, &target_name, &result.match_id, reason),
+        }
+    }
+
+    Ok(())
+}
+
 fn upload_auth_unavailable_reason(target_name: &str, reason: &str) -> String {
     format!(
         "{target_name} upload auth is unavailable: {reason}. Set the configured token source before uploading."
@@ -789,6 +877,40 @@ struct UploadTargetState<'a> {
 enum UploadTargetAuth {
     Available(Option<String>),
     Unavailable(String),
+}
+
+#[derive(Debug)]
+struct ReplayUploadJob {
+    replay: MatchEntry,
+    upload_name: Option<String>,
+    targets: Vec<ReplayUploadTargetJob>,
+}
+
+#[derive(Debug)]
+struct ReplayUploadTargetJob {
+    target_index: usize,
+    target: UploadDestinationConfig,
+    auth_header: Option<String>,
+    rank_bundle: Option<RankBundle>,
+}
+
+#[derive(Debug)]
+struct ReplayUploadJobResult {
+    match_id: String,
+    results: Vec<ReplayUploadTargetResult>,
+}
+
+#[derive(Debug)]
+enum ReplayUploadTargetResult {
+    Completed {
+        target_index: usize,
+        outcome: UploadOutcome,
+        location: Option<String>,
+    },
+    Failed {
+        target_name: String,
+        reason: String,
+    },
 }
 
 #[derive(Debug)]

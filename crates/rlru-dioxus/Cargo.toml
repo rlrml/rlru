@@ -1,6 +1,6 @@
 [package]
 name = "rlru-dioxus"
-version = "0.1.17"
+version = "0.1.18"
 edition = "2021"
 description = "Dioxus client for rlru"
 license = "MIT OR Apache-2.0"
