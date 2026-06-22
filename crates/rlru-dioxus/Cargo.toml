@@ -1,6 +1,6 @@
 [package]
 name = "rlru-dioxus"
-version = "0.1.18"
+version = "0.1.19"
 edition = "2021"
 description = "Dioxus client for rlru"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 dioxus = { version = "=0.7.9", default-features = false, features = ["launch", "lib"] }
-futures-util = { version = "0.3", optional = true }
+futures-util = "0.3"
 gdk = { version = "0.18", optional = true }
 glib = { version = "0.18", optional = true }
 gtk = { version = "0.18", optional = true }
@@ -24,7 +24,7 @@ web-sys = { version = "0.3", features = ["Location", "Window"] }
 [features]
 default = ["web"]
 web = ["dioxus/web"]
-desktop = ["dioxus/desktop", "dep:futures-util", "dep:gdk", "dep:glib", "dep:gtk", "dep:image", "dep:ksni"]
+desktop = ["dioxus/desktop", "dep:gdk", "dep:glib", "dep:gtk", "dep:image", "dep:ksni"]
 mobile = ["dioxus/mobile"]
 android = ["mobile"]
 

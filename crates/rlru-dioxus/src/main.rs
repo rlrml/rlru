@@ -1,5 +1,6 @@
 use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 
 #[cfg(feature = "desktop")]
 mod desktop;
@@ -132,34 +133,33 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
 
     spawn(async move {
         let mut aggregate = BackfillSummary::default();
+        let mut in_flight = FuturesUnordered::new();
 
         loop {
-            let batch = next_queued_uploads(&active_uploads(), MAX_CONCURRENT_UPLOADS);
-            if batch.is_empty() {
+            while in_flight.len() < MAX_CONCURRENT_UPLOADS {
+                let Some(request) = next_queued_upload(&active_uploads()) else {
+                    break;
+                };
+                mark_uploading(&mut active_uploads, &request);
+                history_message.set(upload_start_message(&request, in_flight.len() + 1));
+                in_flight.push(run_upload_request(request));
+            }
+
+            if in_flight.is_empty() {
                 break;
             }
 
-            for request in &batch {
-                mark_uploading(&mut active_uploads, request);
-            }
-            history_message.set(upload_batch_message(&batch));
-
-            let run_summary = match upload_history_replays(batch.clone()).await {
-                Ok(run_summary) => run_summary,
-                Err(error) => failed_upload_batch_summary(&batch, error),
+            let Some(completed) = in_flight.next().await else {
+                break;
             };
-            for request in &batch {
-                update_failed_uploads(&mut failed_uploads, request, &run_summary);
+            update_failed_uploads(&mut failed_uploads, &completed.request, &completed.summary);
+            if upload_should_wait_for_history(&completed.request, &completed.summary) {
+                mark_refreshing(&mut active_uploads, &completed.request);
+            } else {
+                remove_active_upload(&mut active_uploads, &completed.request);
             }
-            for request in &batch {
-                if upload_should_wait_for_history(request, &run_summary) {
-                    mark_refreshing(&mut active_uploads, request);
-                } else {
-                    remove_active_upload(&mut active_uploads, request);
-                }
-            }
-            merge_backfill_summary(&mut aggregate, run_summary);
-            upload_queue_completed.set(upload_queue_completed().saturating_add(batch.len()));
+            merge_backfill_summary(&mut aggregate, completed.summary);
+            upload_queue_completed.set(upload_queue_completed().saturating_add(1));
             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
             history_message.set(format!(
                 "Completed {} of {} queued uploads",
@@ -180,33 +180,42 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
     });
 }
 
-fn next_queued_uploads(active_uploads: &[ActiveUpload], limit: usize) -> Vec<ReplayUploadRequest> {
+fn next_queued_upload(active_uploads: &[ActiveUpload]) -> Option<ReplayUploadRequest> {
     active_uploads
         .iter()
         .filter(|upload| upload.phase == UploadPhase::Pending)
-        .take(limit)
         .map(|upload| upload.request.clone())
-        .collect()
+        .next()
 }
 
-fn upload_batch_message(batch: &[ReplayUploadRequest]) -> String {
-    if let [request] = batch {
+fn upload_start_message(request: &ReplayUploadRequest, active_count: usize) -> String {
+    if active_count == 1 {
         format!(
             "Downloading replay, fetching metadata, and uploading {} to {}",
             short_match_id(&request.match_id),
             request.target_name
         )
     } else {
-        format!("Starting {} concurrently", upload_count_label(batch.len()))
+        format!(
+            "Running {} concurrently; started {} to {}",
+            upload_count_label(active_count),
+            short_match_id(&request.match_id),
+            request.target_name
+        )
     }
 }
 
-fn failed_upload_batch_summary(requests: &[ReplayUploadRequest], error: String) -> BackfillSummary {
-    let mut summary = BackfillSummary::default();
-    for request in requests {
-        merge_backfill_summary(&mut summary, failed_upload_summary(request, error.clone()));
-    }
-    summary
+async fn run_upload_request(request: ReplayUploadRequest) -> CompletedUpload {
+    let summary = match upload_history_replay(request.clone()).await {
+        Ok(summary) => summary,
+        Err(error) => failed_upload_summary(&request, error),
+    };
+    CompletedUpload { request, summary }
+}
+
+struct CompletedUpload {
+    request: ReplayUploadRequest,
+    summary: BackfillSummary,
 }
 
 fn mark_uploading(active_uploads: &mut Signal<Vec<ActiveUpload>>, request: &ReplayUploadRequest) {
@@ -726,4 +735,39 @@ fn cancel_account_auth(
     account_auth_prompt.set(None);
     account_auth_running.set(false);
     action_message.set("Epic authentication canceled".to_string());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(match_id: &str) -> ReplayUploadRequest {
+        ReplayUploadRequest {
+            target_name: "Rocket Sense".to_string(),
+            match_id: match_id.to_string(),
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn next_queued_upload_selects_only_pending_work() {
+        let pending = request("pending-match");
+        let active_uploads = vec![
+            ActiveUpload::uploading(request("running-match")),
+            ActiveUpload::refreshing(request("refreshing-match")),
+            ActiveUpload::pending(pending.clone()),
+        ];
+
+        assert_eq!(next_queued_upload(&active_uploads), Some(pending));
+    }
+
+    #[test]
+    fn next_queued_upload_returns_none_without_pending_work() {
+        let active_uploads = vec![
+            ActiveUpload::uploading(request("running-match")),
+            ActiveUpload::refreshing(request("refreshing-match")),
+        ];
+
+        assert_eq!(next_queued_upload(&active_uploads), None);
+    }
 }

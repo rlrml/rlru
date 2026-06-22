@@ -4,7 +4,7 @@ pub(crate) use rlru::app::{
     failed_upload, finish_account_auth, format_backfill_message, is_same_upload,
     is_same_upload_request, load_history, load_summary, now_label, remove_account,
     save_auto_upload, save_overview_config, short_match_id, upload_failure_reason,
-    upload_history_replays, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
+    upload_history_replay, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
     BackfillSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData,
     ReplayUploadRequest, SyncRunState, MAX_CONCURRENT_UPLOADS,
 };
