@@ -24,7 +24,6 @@ use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 const BASE_URL: &str = "https://api.rlpp.psynet.gg/rpc";
 const GAME_VERSION: &str = "260602.75104.519749";
 const FEATURE_SET: &str = "PrimeUpdate59";
-const PSY_BUILD_ID: &str = "939334844";
 const PSY_SIG_KEY: &str = "c338bd36fb8c42b1a431d30add939fc7";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -89,9 +88,10 @@ impl PsyNetClient {
         let mut request = url
             .into_client_request()
             .with_context(|| format!("invalid PsyNet websocket URL {url:?}"))?;
+        let psy_build_id = psy_build_id();
         request.headers_mut().insert(
             HeaderName::from_static("psybuildid"),
-            HeaderValue::from_static(PSY_BUILD_ID),
+            HeaderValue::from_str(&psy_build_id)?,
         );
         request.headers_mut().insert(
             USER_AGENT,
@@ -166,6 +166,7 @@ impl PsyNetClient {
     ) -> Result<T> {
         let url = format!("{BASE_URL}/{}", path.join("/"));
         let body = serde_json::to_vec(params).context("failed to serialize PsyNet request")?;
+        let psy_build_id = psy_build_id();
         let mut headers = HeaderMap::new();
         headers.insert(
             CONTENT_TYPE,
@@ -179,7 +180,7 @@ impl PsyNetClient {
         );
         headers.insert(
             HeaderName::from_static("psybuildid"),
-            HeaderValue::from_static(PSY_BUILD_ID),
+            HeaderValue::from_str(&psy_build_id)?,
         );
         headers.insert(
             HeaderName::from_static("psyenvironment"),
@@ -645,6 +646,35 @@ fn generate_psy_sig(body: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
 }
 
+fn psy_build_id() -> String {
+    decode_build_id(GAME_VERSION).to_string()
+}
+
+fn decode_build_id(version: &str) -> i32 {
+    let mut data = Vec::with_capacity(version.len() * 2);
+    for code_unit in version.encode_utf16() {
+        data.push(code_unit as u8);
+        data.push((code_unit >> 8) as u8);
+    }
+    crc32(&data, 0)
+}
+
+fn crc32(data: &[u8], seed: u32) -> i32 {
+    const POLY: u32 = 0x04C11DB7;
+    let mut crc = seed ^ 0xFFFF_FFFF;
+    for byte in data {
+        crc ^= (*byte as u32) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ POLY
+            } else {
+                crc << 1
+            };
+        }
+    }
+    (crc ^ 0xFFFF_FFFF) as i32
+}
+
 fn build_message(
     headers: &HashMap<String, String>,
     body: Option<&impl Serialize>,
@@ -715,6 +745,12 @@ mod tests {
 
         assert_eq!(ids.next(), "PsyNetMessage_X_0");
         assert_eq!(ids.next(), "PsyNetMessage_X_1");
+    }
+
+    #[test]
+    fn psy_build_id_is_derived_from_game_version() {
+        assert_eq!(decode_build_id(GAME_VERSION), 939334844);
+        assert_eq!(psy_build_id(), "939334844");
     }
 
     #[test]
