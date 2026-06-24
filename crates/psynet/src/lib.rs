@@ -22,7 +22,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{connect_async, MaybeTlsStream, WebSocketStream};
 
 const BASE_URL: &str = "https://api.rlpp.psynet.gg/rpc";
-const GAME_VERSION: &str = "260602.75104.519749";
+const GAME_VERSION: &str = "260616.79869.520762";
 const FEATURE_SET: &str = "PrimeUpdate59";
 const PSY_SIG_KEY: &str = "c338bd36fb8c42b1a431d30add939fc7";
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(15);
@@ -749,8 +749,8 @@ mod tests {
 
     #[test]
     fn psy_build_id_is_derived_from_game_version() {
-        assert_eq!(decode_build_id(GAME_VERSION), 939334844);
-        assert_eq!(psy_build_id(), "939334844");
+        assert_eq!(decode_build_id(GAME_VERSION), 102852329);
+        assert_eq!(psy_build_id(), "102852329");
     }
 
     #[test]
