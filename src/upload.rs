@@ -5,15 +5,17 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use reqwest::header::{AUTHORIZATION, LOCATION};
+use reqwest::header::{HeaderMap, AUTHORIZATION, LOCATION};
 use reqwest::StatusCode;
 use serde_json::Value;
+use url::Url;
 
 use crate::config::{RankUploadConfig, UploadDestinationConfig};
 use crate::state_file::write_atomically;
 
 const HISTORY_PER_ACCOUNT: usize = 20;
 const MAX_CACHE_SIZE_FACTOR: usize = 2;
+const RESPONSE_BODY_LOG_LIMIT: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct ReplayUploader {
@@ -114,9 +116,12 @@ impl ReplayUploader {
                 .context("replay path has no UTF-8 file name")?
                 .to_string(),
         };
+        let endpoint = target.endpoint_url(&target.replay_upload.path)?;
+        let rank_player_count = ranks_bundle.map_or(0, |bundle| bundle.players.len());
         let bytes = fs::read(file_path)
             .with_context(|| format!("failed to read replay {}", file_path.display()))?;
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        let file_size = bytes.len();
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
         let mut form =
             reqwest::multipart::Form::new().part(target.replay_upload.file_field.clone(), part);
 
@@ -135,14 +140,20 @@ impl ReplayUploader {
 
         let response = self
             .request_with_auth_header(
-                self.http
-                    .post(target.endpoint_url(&target.replay_upload.path)?)
-                    .multipart(form),
+                self.http.post(endpoint.clone()).multipart(form),
                 auth_header,
             )
             .send()
             .await
-            .with_context(|| format!("failed to upload replay to {}", target.name))?;
+            .with_context(|| {
+                format!(
+                    "failed to send replay upload request to {} at {endpoint} for match {} from {} \
+                     (filename {file_name}, {file_size} bytes, rank_players={rank_player_count})",
+                    target.name,
+                    match_id.unwrap_or("<unknown>"),
+                    file_path.display()
+                )
+            })?;
 
         let status = response.status();
         let location_header = response
@@ -150,10 +161,25 @@ impl ReplayUploader {
             .get(LOCATION)
             .and_then(|value| value.to_str().ok())
             .map(ToOwned::to_owned);
+        let response_headers = response.headers().clone();
         let body = response.text().await.unwrap_or_default();
         let location = upload_location(target, location_header.as_deref(), &body);
 
-        classify_upload_response(target, status, location, &body)
+        classify_upload_response_with_details(
+            target,
+            status,
+            location,
+            &body,
+            Some(UploadFailureDetails {
+                endpoint: &endpoint,
+                file_path,
+                file_name: &file_name,
+                match_id,
+                file_size,
+                rank_player_count,
+                response_headers: &response_headers,
+            }),
+        )
     }
 
     pub async fn upload_mmr(
@@ -514,11 +540,32 @@ fn rocket_sense_location(target: &UploadDestinationConfig, body: &str) -> Option
         .map(|url| url.to_string())
 }
 
+#[cfg(test)]
 fn classify_upload_response(
     target: &UploadDestinationConfig,
     status: StatusCode,
     location: Option<String>,
     body: &str,
+) -> Result<UploadResult> {
+    classify_upload_response_with_details(target, status, location, body, None)
+}
+
+struct UploadFailureDetails<'a> {
+    endpoint: &'a Url,
+    file_path: &'a Path,
+    file_name: &'a str,
+    match_id: Option<&'a str>,
+    file_size: usize,
+    rank_player_count: usize,
+    response_headers: &'a HeaderMap,
+}
+
+fn classify_upload_response_with_details(
+    target: &UploadDestinationConfig,
+    status: StatusCode,
+    location: Option<String>,
+    body: &str,
+    details: Option<UploadFailureDetails<'_>>,
 ) -> Result<UploadResult> {
     let code = status.as_u16();
     if target.replay_upload.success_statuses.contains(&code) {
@@ -534,7 +581,88 @@ fn classify_upload_response(
             location,
         })
     } else {
-        bail!("{} upload failed with {status}: {body}", target.name)
+        let body_excerpt = response_body_excerpt(body);
+        if let Some(details) = details {
+            let response_headers = response_header_summary(details.response_headers);
+            tracing::warn!(
+                target = %target.name,
+                status = %status,
+                endpoint = %details.endpoint,
+                match_id = details.match_id.unwrap_or("<unknown>"),
+                replay_path = %details.file_path.display(),
+                filename = %details.file_name,
+                file_size_bytes = details.file_size,
+                rank_players = details.rank_player_count,
+                response_headers = %response_headers,
+                response_body = %body_excerpt,
+                "replay upload returned unsuccessful status"
+            );
+            bail!(
+                "{} upload failed with {status}; endpoint={}; match_id={}; replay_path={}; \
+                 filename={}; file_size_bytes={}; rank_players={}; response_headers={}; \
+                 response_body={}",
+                target.name,
+                details.endpoint,
+                details.match_id.unwrap_or("<unknown>"),
+                details.file_path.display(),
+                details.file_name,
+                details.file_size,
+                details.rank_player_count,
+                response_headers,
+                body_excerpt
+            )
+        } else {
+            bail!(
+                "{} upload failed with {status}; response_body={}",
+                target.name,
+                body_excerpt
+            )
+        }
+    }
+}
+
+fn response_header_summary(headers: &HeaderMap) -> String {
+    let selected = [
+        "content-type",
+        "content-length",
+        "location",
+        "x-request-id",
+        "x-correlation-id",
+        "server",
+    ]
+    .into_iter()
+    .filter_map(|name| {
+        headers.get(name).map(|value| {
+            let value = value.to_str().unwrap_or("<non-utf8>");
+            format!("{name}={value}")
+        })
+    })
+    .collect::<Vec<_>>();
+
+    if selected.is_empty() {
+        "<none>".to_string()
+    } else {
+        selected.join(", ")
+    }
+}
+
+fn response_body_excerpt(body: &str) -> String {
+    let mut excerpt = body
+        .chars()
+        .take(RESPONSE_BODY_LOG_LIMIT)
+        .map(|character| match character {
+            '\n' | '\r' | '\t' => ' ',
+            character if character.is_control() => ' ',
+            character => character,
+        })
+        .collect::<String>();
+    if body.chars().count() > RESPONSE_BODY_LOG_LIMIT {
+        excerpt.push_str("... <truncated>");
+    }
+    if excerpt.is_empty() {
+        "<empty>".to_string()
+    } else {
+        excerpt
     }
 }
 

@@ -1,6 +1,7 @@
 use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "desktop")]
 mod desktop;
@@ -55,6 +56,11 @@ impl ActiveView {
 }
 
 fn main() {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
     launch_app();
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "rlru-dioxus"
-version = "0.1.21"
+version = "0.1.22"
 edition = "2021"
 description = "Dioxus client for rlru"
 license = "MIT OR Apache-2.0"
@@ -19,6 +19,7 @@ gtk = { version = "0.18", optional = true }
 image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
 ksni = { version = "0.3", optional = true, features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 web-sys = { version = "0.3", features = ["Location", "Window"] }
 
 [features]

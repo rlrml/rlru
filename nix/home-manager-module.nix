@@ -18,7 +18,9 @@ in {
 
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
-      default = {};
+      default = {
+        RUST_LOG = "info";
+      };
       example = lib.literalExpression ''{ RUST_LOG = "info"; }'';
       description = "Environment variables to set for the rlru user service.";
     };
