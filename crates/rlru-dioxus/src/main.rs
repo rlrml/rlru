@@ -1,6 +1,7 @@
 use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
 use futures_util::stream::{FuturesUnordered, StreamExt};
+#[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "desktop")]
@@ -56,12 +57,22 @@ impl ActiveView {
 }
 
 fn main() {
+    init_tracing();
+    launch_app();
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn init_tracing() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .init();
-    launch_app();
+}
+
+#[cfg(target_arch = "wasm32")]
+fn init_tracing() {
+    // `tracing_subscriber::fmt` timestamps use `SystemTime`, which panics in browser WASM.
 }
 
 #[cfg(feature = "desktop")]
