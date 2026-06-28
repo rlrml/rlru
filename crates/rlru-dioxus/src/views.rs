@@ -27,7 +27,6 @@ pub(crate) fn Sidebar(
                         }
                         strong { "rlru" }
                     }
-                    small { "Replay uploader" }
                 }
                 button {
                     class: "mobile-nav-toggle",
