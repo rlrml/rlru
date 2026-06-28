@@ -3,6 +3,7 @@ use dioxus::prelude::*;
 use crate::model::*;
 use crate::ActiveView;
 
+const ROCKET_SENSE_LOGO: &str = include_str!("../assets/icons/rocket-sense-logo.svg");
 #[component]
 pub(crate) fn Sidebar(
     active: ActiveView,
@@ -17,7 +18,15 @@ pub(crate) fn Sidebar(
             class: "{class}",
             div { class: "nav-header",
                 div { class: "nav-title",
-                    strong { "rlru" }
+                    span {
+                        class: "nav-brand-row",
+                        span {
+                            class: "rocket-sense-logo",
+                            aria_hidden: "true",
+                            dangerous_inner_html: ROCKET_SENSE_LOGO,
+                        }
+                        strong { "rlru" }
+                    }
                     small { "Replay uploader" }
                 }
                 button {

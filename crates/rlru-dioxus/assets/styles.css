@@ -1,5 +1,5 @@
 :root {
-  background: #eef4ff;
+  background: #f4f7fb;
   color: #10151f;
   font-size: 15px;
   font-family:
@@ -8,7 +8,7 @@
   --safe-area-right: env(safe-area-inset-right, 0px);
   --safe-area-bottom: env(safe-area-inset-bottom, 0px);
   --safe-area-left: env(safe-area-inset-left, 0px);
-  --app-bg: #eef4ff;
+  --app-bg: #f4f7fb;
   --surface: #ffffff;
   --surface-soft: #f7faff;
   --surface-tinted: #eaf2ff;
@@ -25,6 +25,16 @@
   --accent-hover: #cf1010;
   --accent-soft: #ffe5e5;
   --accent-border: #ff9b9b;
+  --rocket-bg: #f6f7f8;
+  --rocket-navy: #111827;
+  --rocket-navy-soft: #1f2937;
+  --rocket-navy-border: #243142;
+  --rocket-nav-muted: #9ca3af;
+  --rocket-orange: #ea580c;
+  --rocket-orange-hover: #c2410c;
+  --rocket-orange-soft: #fff7ed;
+  --rocket-orange-chip: #ffedd5;
+  --rocket-orange-border: #fed7aa;
   --warning-soft: #fff1d6;
   --warning-border: #f1bf58;
   --warning-text: #745314;
@@ -57,8 +67,8 @@ body {
 }
 
 .app-nav {
-  background: var(--surface);
-  border-right: 1px solid var(--border);
+  background: var(--rocket-navy);
+  border-right: 1px solid var(--rocket-navy-border);
   bottom: 0;
   display: flex;
   flex-direction: column;
@@ -82,12 +92,38 @@ body {
 .nav-title {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
+  min-width: 0;
+}
+
+.nav-brand-row {
+  align-items: center;
+  display: flex;
+  gap: 9px;
   min-width: 0;
 }
 
 .nav-title strong {
+  color: #ffffff;
   font-size: 1.15rem;
+  line-height: 1;
+}
+
+.nav-title small {
+  color: var(--rocket-nav-muted);
+}
+
+.rocket-sense-logo {
+  display: block;
+  flex: 0 0 auto;
+  height: 28px;
+  width: 28px;
+}
+
+.rocket-sense-logo svg {
+  display: block;
+  height: 100%;
+  width: 100%;
 }
 
 .app-nav nav {
@@ -98,8 +134,8 @@ body {
 
 .mobile-nav-toggle {
   align-items: center;
-  background: var(--surface-soft);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: 6px;
   cursor: pointer;
   display: none;
@@ -112,7 +148,7 @@ body {
 }
 
 .mobile-nav-toggle span {
-  background: var(--text);
+  background: #ffffff;
   border-radius: 999px;
   display: block;
   height: 2px;
@@ -127,7 +163,7 @@ body {
   background: transparent;
   border: 0;
   border-radius: 6px;
-  color: var(--text);
+  color: #ffffff;
   cursor: pointer;
   font: inherit;
   font-weight: 700;
@@ -138,8 +174,9 @@ body {
 
 .nav-button:hover,
 .nav-button.selected {
-  background: var(--primary-soft);
-  color: var(--primary-hover);
+  background: rgba(255, 255, 255, 0.09);
+  box-shadow: inset 3px 0 0 var(--rocket-orange);
+  color: #ffffff;
 }
 
 .workspace {
@@ -207,7 +244,9 @@ small,
 }
 
 .secondary-button:hover {
-  background: var(--surface-tinted);
+  background: var(--rocket-orange-soft);
+  border-color: var(--rocket-orange-border);
+  color: var(--rocket-orange-hover);
 }
 
 .notice {
@@ -234,6 +273,7 @@ small,
 }
 
 .metric {
+  border-top: 3px solid var(--rocket-orange-border);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -247,6 +287,7 @@ small,
 }
 
 .panel {
+  box-shadow: inset 3px 0 0 rgba(234, 88, 12, 0.16);
   margin-bottom: 12px;
   padding: 16px 18px;
 }
@@ -389,8 +430,8 @@ small,
 }
 
 .upload-activity-needs-attention {
-  background: var(--warning-soft);
-  border-color: var(--warning-border);
+  background: var(--rocket-orange-soft);
+  border-color: var(--rocket-orange-border);
 }
 
 .upload-activity-idle {
@@ -449,7 +490,7 @@ small,
 }
 
 .status-dot.off {
-  background: var(--accent);
+  background: var(--rocket-orange);
 }
 
 .account-list {
@@ -771,9 +812,9 @@ a.state-pill {
 
 .compact-button.upload-pending,
 .compact-button.upload-pending:disabled {
-  background: var(--warning-soft);
-  border-color: var(--warning-border);
-  color: var(--warning-text);
+  background: var(--rocket-orange-chip);
+  border-color: var(--rocket-orange-border);
+  color: var(--rocket-orange-hover);
   opacity: 1;
 }
 
@@ -822,7 +863,7 @@ a.state-pill {
 
   .app-nav {
     bottom: auto;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--rocket-navy-border);
     border-right: 0;
     gap: 12px;
     height: auto;
@@ -863,7 +904,7 @@ a.state-pill {
   .app-nav.open {
     bottom: 0;
     border-bottom: 0;
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--rocket-navy-border);
     box-shadow: 18px 0 34px var(--shadow);
     height: 100vh;
     height: 100dvh;
@@ -882,7 +923,7 @@ a.state-pill {
   }
 
   .nav-backdrop {
-    background: rgba(16, 21, 31, 0.32);
+    background: rgba(17, 24, 39, 0.42);
     border: 0;
     display: block;
     inset: 0;
