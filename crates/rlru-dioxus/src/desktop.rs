@@ -49,6 +49,88 @@ fn configure_linux_desktop_environment() {
 #[allow(dead_code)]
 fn configure_linux_desktop_environment() {}
 
+#[cfg(feature = "desktop")]
+fn should_disable_window_decorations() -> bool {
+    should_disable_window_decorations_for(configured_window_decorations(), |name| {
+        std::env::var_os(name)
+    })
+}
+
+#[cfg(feature = "desktop")]
+fn should_disable_window_decorations_for(
+    config: rlru::config::WindowDecorationsConfig,
+    env_var: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    match config {
+        rlru::config::WindowDecorationsConfig::Auto => {
+            auto_should_disable_window_decorations(env_var)
+        }
+        rlru::config::WindowDecorationsConfig::System => false,
+        rlru::config::WindowDecorationsConfig::Hidden => true,
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn configured_window_decorations() -> rlru::config::WindowDecorationsConfig {
+    let paths = match rlru::paths::AppPaths::discover() {
+        Ok(paths) => paths,
+        Err(error) => {
+            eprintln!("Failed to discover rlru config path for window decorations: {error}");
+            return rlru::config::WindowDecorationsConfig::Auto;
+        }
+    };
+
+    match rlru::Config::load_or_default(&paths.config_file()) {
+        Ok(config) => config.behavior.window_decorations,
+        Err(error) => {
+            eprintln!("Failed to read rlru window decorations config: {error}");
+            rlru::config::WindowDecorationsConfig::Auto
+        }
+    }
+}
+
+#[cfg(feature = "desktop")]
+fn auto_should_disable_window_decorations(
+    env_var: impl FnMut(&str) -> Option<std::ffi::OsString>,
+) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        is_hyprland_session(env_var)
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn is_hyprland_session(mut env_var: impl FnMut(&str) -> Option<std::ffi::OsString>) -> bool {
+    if env_var("HYPRLAND_INSTANCE_SIGNATURE")
+        .as_deref()
+        .is_some_and(|value| !value.is_empty())
+    {
+        return true;
+    }
+
+    [
+        "XDG_CURRENT_DESKTOP",
+        "XDG_SESSION_DESKTOP",
+        "DESKTOP_SESSION",
+    ]
+    .into_iter()
+    .filter_map(&mut env_var)
+    .any(|value| desktop_session_value_is_hyprland(&value))
+}
+
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+fn desktop_session_value_is_hyprland(value: &std::ffi::OsStr) -> bool {
+    value
+        .to_string_lossy()
+        .split([':', ';', ','])
+        .any(|part| part.trim().eq_ignore_ascii_case("hyprland"))
+}
+
 #[cfg(all(
     feature = "desktop",
     not(any(target_os = "ios", target_os = "android"))
@@ -252,6 +334,11 @@ pub(crate) fn launch_app() {
         }
     }
 
+    let mut window = WindowBuilder::new().with_title("rlru").with_visible(true);
+    if should_disable_window_decorations() {
+        window = window.with_decorations(false);
+    }
+
     let mut config = Config::new()
         // Dioxus's default Linux workaround forces GTK to X11. rlru prefers
         // native Wayland so fractional-scaled compositors do not blur the UI.
@@ -266,12 +353,7 @@ pub(crate) fn launch_app() {
                 windows.push(window);
             }
         })
-        .with_window(
-            WindowBuilder::new()
-                .with_title("rlru")
-                .with_decorations(false)
-                .with_visible(true),
-        );
+        .with_window(window);
 
     match icon_from_memory::<dioxus::desktop::tao::window::Icon>(APP_ICON_PNG) {
         Ok(icon) => config = config.with_icon(icon),
@@ -291,4 +373,65 @@ pub(crate) fn launch_app() {
     dioxus::LaunchBuilder::desktop()
         .with_cfg(config)
         .launch(crate::App);
+}
+
+#[cfg(all(test, feature = "desktop", target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    fn lookup<'a>(
+        entries: &'a [(&'a str, &'a str)],
+    ) -> impl FnMut(&str) -> Option<std::ffi::OsString> + 'a {
+        move |name| {
+            entries
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| std::ffi::OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn hyprland_signature_identifies_hyprland_session() {
+        assert!(is_hyprland_session(lookup(&[(
+            "HYPRLAND_INSTANCE_SIGNATURE",
+            "abc123",
+        )])));
+    }
+
+    #[test]
+    fn desktop_session_names_identify_hyprland_session() {
+        assert!(is_hyprland_session(lookup(&[(
+            "XDG_CURRENT_DESKTOP",
+            "Hyprland",
+        )])));
+        assert!(is_hyprland_session(lookup(&[(
+            "XDG_CURRENT_DESKTOP",
+            "KDE:Hyprland",
+        )])));
+        assert!(is_hyprland_session(lookup(&[(
+            "DESKTOP_SESSION",
+            "hyprland",
+        )])));
+    }
+
+    #[test]
+    fn other_desktop_sessions_are_not_hyprland() {
+        assert!(!is_hyprland_session(lookup(&[
+            ("XDG_CURRENT_DESKTOP", "KDE"),
+            ("XDG_SESSION_DESKTOP", "plasma"),
+            ("DESKTOP_SESSION", "plasmawayland"),
+        ])));
+    }
+
+    #[test]
+    fn explicit_window_decoration_overrides_take_precedence() {
+        assert!(should_disable_window_decorations_for(
+            rlru::config::WindowDecorationsConfig::Hidden,
+            lookup(&[])
+        ));
+        assert!(!should_disable_window_decorations_for(
+            rlru::config::WindowDecorationsConfig::System,
+            lookup(&[("XDG_CURRENT_DESKTOP", "Hyprland")])
+        ));
+    }
 }

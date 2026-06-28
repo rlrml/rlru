@@ -133,6 +133,7 @@ pub struct BehaviorConfig {
     pub start_in_tray: bool,
     pub upload_on_launch: bool,
     pub no_upload_while_connected: bool,
+    pub window_decorations: WindowDecorationsConfig,
     #[serde(with = "humantime_serde")]
     pub auto_upload_interval: Duration,
     #[serde(with = "humantime_serde")]
@@ -154,6 +155,7 @@ impl Default for BehaviorConfig {
             start_in_tray: false,
             upload_on_launch: false,
             no_upload_while_connected: true,
+            window_decorations: WindowDecorationsConfig::Auto,
             auto_upload_interval: Duration::from_secs(45 * 60),
             auto_upload_jitter_max: Duration::from_secs(15 * 60),
             selected_account: None,
@@ -176,6 +178,15 @@ impl BehaviorConfig {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowDecorationsConfig {
+    #[default]
+    Auto,
+    System,
+    Hidden,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]

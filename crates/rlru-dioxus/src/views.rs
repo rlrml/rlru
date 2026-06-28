@@ -89,6 +89,7 @@ pub(crate) fn OverviewView(
     let mut jitter_minutes = use_signal(|| summary.auto_upload_jitter_minutes.to_string());
     let mut upload_on_launch = use_signal(|| summary.upload_on_launch);
     let mut no_upload_while_connected = use_signal(|| summary.no_upload_while_connected);
+    let mut window_decorations = use_signal(|| summary.window_decorations.clone());
 
     rsx! {
         div { class: "summary-grid",
@@ -152,6 +153,16 @@ pub(crate) fn OverviewView(
                     }
                     span { "Skip accounts that are online" }
                 }
+                label {
+                    span { "Window decorations" }
+                    select {
+                        value: "{window_decorations}",
+                        onchange: move |event| window_decorations.set(event.value()),
+                        option { value: "auto", "Auto" }
+                        option { value: "system", "System" }
+                        option { value: "hidden", "Hidden" }
+                    }
+                }
                 button {
                     class: "primary-button form-submit",
                     onclick: move |_| {
@@ -160,6 +171,7 @@ pub(crate) fn OverviewView(
                             auto_upload_jitter_minutes: jitter_minutes().trim().to_string(),
                             upload_on_launch: upload_on_launch(),
                             no_upload_while_connected: no_upload_while_connected(),
+                            window_decorations: window_decorations(),
                         });
                     },
                     "Save Configuration"

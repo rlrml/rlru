@@ -11,7 +11,7 @@ pub use model::*;
 use format::{auth_label, format_record_start_timestamp, platform_label};
 
 use crate::auth::AuthManager;
-use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform};
+use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform, WindowDecorationsConfig};
 use crate::paths::AppPaths;
 use crate::state_file::write_atomically;
 use crate::sync::{SyncOptions, SyncService};
@@ -140,6 +140,8 @@ fn summary_from_config(
         auto_upload,
         upload_on_launch: config.behavior.upload_on_launch,
         no_upload_while_connected: config.behavior.no_upload_while_connected,
+        window_decorations: window_decorations_value(config.behavior.window_decorations)
+            .to_string(),
         selected_account,
         selected_upload_destination,
         auto_upload_interval_minutes: config.behavior.auto_upload_interval.as_secs() / 60,
@@ -164,6 +166,7 @@ fn unavailable_summary(error: String) -> AppSummary {
         auto_upload: false,
         upload_on_launch: false,
         no_upload_while_connected: false,
+        window_decorations: window_decorations_value(WindowDecorationsConfig::Auto).to_string(),
         selected_account: None,
         selected_upload_destination: None,
         auto_upload_interval_minutes: 45,
@@ -434,12 +437,14 @@ pub fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary,
         Some(1),
     )?;
     let jitter_minutes = parse_minutes("jitter max", &input.auto_upload_jitter_minutes, None)?;
+    let window_decorations = parse_window_decorations(&input.window_decorations)?;
 
     update_behavior(|behavior| {
         behavior.auto_upload_interval = Duration::from_secs(interval_minutes * 60);
         behavior.auto_upload_jitter_max = Duration::from_secs(jitter_minutes * 60);
         behavior.upload_on_launch = input.upload_on_launch;
         behavior.no_upload_while_connected = input.no_upload_while_connected;
+        behavior.window_decorations = window_decorations;
     })
 }
 
@@ -457,6 +462,23 @@ fn update_behavior(mut update: impl FnMut(&mut BehaviorConfig)) -> Result<AppSum
         update(&mut config.behavior);
         Ok(())
     })
+}
+
+fn window_decorations_value(config: WindowDecorationsConfig) -> &'static str {
+    match config {
+        WindowDecorationsConfig::Auto => "auto",
+        WindowDecorationsConfig::System => "system",
+        WindowDecorationsConfig::Hidden => "hidden",
+    }
+}
+
+fn parse_window_decorations(value: &str) -> Result<WindowDecorationsConfig, String> {
+    match value {
+        "auto" => Ok(WindowDecorationsConfig::Auto),
+        "system" => Ok(WindowDecorationsConfig::System),
+        "hidden" => Ok(WindowDecorationsConfig::Hidden),
+        _ => Err(format!("Unsupported window decorations setting {value:?}")),
+    }
 }
 
 fn parse_platform(value: &str) -> Result<PlayerPlatform, String> {

@@ -6,6 +6,7 @@ pub struct AppSummary {
     pub auto_upload: bool,
     pub upload_on_launch: bool,
     pub no_upload_while_connected: bool,
+    pub window_decorations: String,
     pub selected_account: Option<String>,
     pub selected_upload_destination: Option<String>,
     pub auto_upload_interval_minutes: u64,
@@ -64,6 +65,7 @@ pub struct OverviewConfigFormData {
     pub auto_upload_jitter_minutes: String,
     pub upload_on_launch: bool,
     pub no_upload_while_connected: bool,
+    pub window_decorations: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
