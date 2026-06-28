@@ -37,7 +37,7 @@
         # revision when the tree is uncommitted, then to "unknown".
         rlruGitCommit = self.rev or self.dirtyRev or "unknown";
         packageVersion = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
-        androidVersionCode = "114";
+        androidVersionCode = "115";
         sourceRoot = ./.;
         cleanSrc = lib.cleanSourceWith {
           src = sourceRoot;
