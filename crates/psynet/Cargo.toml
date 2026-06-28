@@ -1,6 +1,6 @@
 [package]
 name = "psynet"
-version = "0.1.22"
+version = "0.1.23"
 edition = "2021"
 description = "Rust client for Psyonix's PsyNet RPC backend (Rocket League online services)"
 license = "MIT OR Apache-2.0"

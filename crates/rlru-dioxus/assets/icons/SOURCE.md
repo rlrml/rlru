@@ -1,5 +1,5 @@
-Rocket League shield source: https://commons.wikimedia.org/wiki/File:Rocket_League_logo.svg
+Rocket Sense logo source: `rocket-sense-logo.svg`, copied from the Rocket Sense
+web app's `web/public/brand/logo.svg`.
 
-The app icon is a derived asset using only the shield/ball mark from the
-official Rocket League logo with an upload-arrow overlay for rlru. The Rocket
-League wordmark/text is intentionally not included in the app icon assets.
+The app icon PNGs are generated from that SVG at the sizes required by Dioxus,
+desktop entries, tray pixmaps, and Android launcher assets.
