@@ -736,6 +736,8 @@ async fn fetch_player_skills(
         return PlayerSkillIndex::default();
     }
 
+    let player_count = player_ids.len();
+
     match rpc.get_players_skills(player_ids).await {
         Ok(players) => PlayerSkillIndex {
             fetched_at: Some(unix_now_seconds()),
@@ -745,7 +747,11 @@ async fn fetch_player_skills(
                 .collect(),
         },
         Err(error) => {
-            tracing::warn!(%error, "failed to fetch player skills; uploading ranks without current-skill counters");
+            tracing::warn!(
+                %error,
+                player_count,
+                "failed to fetch player skills; uploading ranks without current-skill counters"
+            );
             PlayerSkillIndex::default()
         }
     }

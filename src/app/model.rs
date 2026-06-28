@@ -95,7 +95,7 @@ pub struct HistoryUploadDestination {
     pub location: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct ReplayUploadRequest {
     pub target_name: String,
     pub match_id: String,

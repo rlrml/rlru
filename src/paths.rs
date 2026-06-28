@@ -50,6 +50,10 @@ impl AppPaths {
     pub fn sync_state_file(&self) -> PathBuf {
         self.data_dir.join("sync-state.toml")
     }
+
+    pub fn upload_failures_file(&self) -> PathBuf {
+        self.data_dir.join("upload-failures.toml")
+    }
 }
 
 fn create_private_dir(path: &PathBuf) -> Result<()> {

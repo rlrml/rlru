@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 use std::time::Duration;
 
 mod format;
@@ -12,10 +13,16 @@ use format::{auth_label, format_record_start_timestamp, platform_label};
 use crate::auth::AuthManager;
 use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform};
 use crate::paths::AppPaths;
+use crate::state_file::write_atomically;
 use crate::sync::{SyncOptions, SyncService};
 use crate::Config;
 
 pub const MAX_CONCURRENT_UPLOADS: usize = crate::sync::MAX_CONCURRENT_UPLOADS;
+
+#[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
+struct UploadFailureState {
+    failed_uploads: Vec<ReplayUploadRequest>,
+}
 
 struct AppContext {
     paths: AppPaths,
@@ -54,6 +61,40 @@ pub fn load_summary() -> AppSummary {
         Ok(context) => summary_from_config(&context.paths, &context.config_path, &context.config),
         Err(error) => unavailable_summary(error),
     }
+}
+
+pub fn load_persisted_failed_uploads() -> Result<Vec<ReplayUploadRequest>, String> {
+    let context = AppContext::load(true)?;
+    read_failed_upload_state(&context.paths.upload_failures_file())
+}
+
+pub fn save_persisted_failed_uploads(failed_uploads: &[ReplayUploadRequest]) -> Result<(), String> {
+    let context = AppContext::load(true)?;
+    write_failed_upload_state(&context.paths.upload_failures_file(), failed_uploads)
+}
+
+fn read_failed_upload_state(path: &Path) -> Result<Vec<ReplayUploadRequest>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(contents) => {
+            let state: UploadFailureState = toml::from_str(&contents)
+                .map_err(|error| format!("failed to parse {}: {error}", path.display()))?;
+            Ok(dedupe_upload_requests(state.failed_uploads))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(format!("failed to read {}: {error}", path.display())),
+    }
+}
+
+fn write_failed_upload_state(
+    path: &Path,
+    failed_uploads: &[ReplayUploadRequest],
+) -> Result<(), String> {
+    let state = UploadFailureState {
+        failed_uploads: dedupe_upload_requests(failed_uploads.to_vec()),
+    };
+    let contents = toml::to_string_pretty(&state)
+        .map_err(|error| format!("failed to serialize upload failures: {error}"))?;
+    write_atomically(path, contents).map_err(|error| error.to_string())
 }
 
 fn summary_from_config(
@@ -208,17 +249,33 @@ pub async fn upload_history_replays(
     let mut aggregate = BackfillSummary::default();
 
     for (target_name, match_ids) in grouped_upload_requests(requests) {
-        let summary = SyncService::new(context.paths.clone(), context.config.clone())
+        let summary = match SyncService::new(context.paths.clone(), context.config.clone())
             .run_once_with_options(SyncOptions {
                 include_online: true,
-                target_name: Some(target_name),
+                target_name: Some(target_name.clone()),
                 force: true,
-                match_ids,
+                match_ids: match_ids.clone(),
             })
             .await
-            .map_err(|error| error.to_string())?;
+        {
+            Ok(summary) => summary,
+            Err(error) => {
+                tracing::warn!(
+                    target_name = %target_name,
+                    match_ids = ?match_ids,
+                    %error,
+                    "upload request failed while running sync service"
+                );
+                return Err(error.to_string());
+            }
+        };
 
         if summary.matches_seen == 0 {
+            tracing::warn!(
+                target_name = %target_name,
+                match_ids = ?match_ids,
+                "upload request did not match any replay in current RL API history"
+            );
             return Err("No matching replay was found in current RL API history".to_string());
         }
 
@@ -455,6 +512,34 @@ mod tests {
                 reason: Some("new".to_string()),
             }]
         );
+    }
+
+    #[test]
+    fn missing_failed_upload_state_loads_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("upload-failures.toml");
+
+        assert_eq!(read_failed_upload_state(&path).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn failed_upload_state_round_trips_deduped_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("upload-failures.toml");
+        let old_request = ReplayUploadRequest {
+            target_name: "Rocket Sense".to_string(),
+            match_id: "abc".to_string(),
+            reason: Some("old".to_string()),
+        };
+        let new_request = ReplayUploadRequest {
+            target_name: "Rocket Sense".to_string(),
+            match_id: "abc".to_string(),
+            reason: Some("new".to_string()),
+        };
+
+        write_failed_upload_state(&path, &[old_request, new_request.clone()]).unwrap();
+
+        assert_eq!(read_failed_upload_state(&path).unwrap(), vec![new_request]);
     }
 
     #[test]

@@ -2,11 +2,12 @@
 pub(crate) use rlru::app::{
     add_account, backfill_upload_destinations, begin_account_auth, dedupe_upload_requests,
     failed_upload, finish_account_auth, format_backfill_message, is_same_upload,
-    is_same_upload_request, load_history, load_summary, now_label, remove_account,
-    save_auto_upload, save_overview_config, short_match_id, upload_failure_reason,
-    upload_history_replay, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
-    BackfillSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData,
-    ReplayUploadRequest, SyncRunState, MAX_CONCURRENT_UPLOADS,
+    is_same_upload_request, load_history, load_persisted_failed_uploads, load_summary, now_label,
+    remove_account, save_auto_upload, save_overview_config, save_persisted_failed_uploads,
+    short_match_id, upload_failure_reason, upload_history_replay, upsert_failed_upload,
+    AccountAuthPrompt, AccountFormData, AppSummary, BackfillSummary, HistoryRow,
+    HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest, SyncRunState,
+    MAX_CONCURRENT_UPLOADS,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -685,6 +686,18 @@ pub(crate) fn dedupe_upload_requests(
         upsert_failed_upload(&mut deduped, request);
     }
     deduped
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn load_persisted_failed_uploads() -> Result<Vec<ReplayUploadRequest>, String> {
+    Ok(Vec::new())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn save_persisted_failed_uploads(
+    _failed_uploads: &[ReplayUploadRequest],
+) -> Result<(), String> {
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]

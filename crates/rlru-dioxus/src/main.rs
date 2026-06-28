@@ -169,7 +169,9 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
             let Some(completed) = in_flight.next().await else {
                 break;
             };
-            update_failed_uploads(&mut failed_uploads, &completed.request, &completed.summary);
+            let persisted_failures =
+                update_failed_uploads(&mut failed_uploads, &completed.request, &completed.summary);
+            persist_failed_uploads(&persisted_failures);
             if upload_should_wait_for_history(&completed.request, &completed.summary) {
                 mark_refreshing(&mut active_uploads, &completed.request);
             } else {
@@ -225,8 +227,17 @@ fn upload_start_message(request: &ReplayUploadRequest, active_count: usize) -> S
 async fn run_upload_request(request: ReplayUploadRequest) -> CompletedUpload {
     let summary = match upload_history_replay(request.clone()).await {
         Ok(summary) => summary,
-        Err(error) => failed_upload_summary(&request, error),
+        Err(error) => {
+            tracing::warn!(
+                target_name = %request.target_name,
+                match_id = %request.match_id,
+                %error,
+                "upload request failed before replay upload completed"
+            );
+            failed_upload_summary(&request, error)
+        }
     };
+    log_upload_failures(&summary);
     CompletedUpload { request, summary }
 }
 
@@ -276,13 +287,42 @@ fn update_failed_uploads(
     failed_uploads: &mut Signal<Vec<ReplayUploadRequest>>,
     request: &ReplayUploadRequest,
     run_summary: &BackfillSummary,
-) {
+) -> Vec<ReplayUploadRequest> {
     let mut failures = failed_uploads();
     failures.retain(|failure| !is_same_upload_request(failure, request));
     for failure in &run_summary.failed_uploads {
         upsert_failed_upload(&mut failures, failure.clone());
     }
-    failed_uploads.set(failures);
+    failed_uploads.set(failures.clone());
+    failures
+}
+
+fn persist_failed_uploads(failures: &[ReplayUploadRequest]) {
+    if let Err(error) = save_persisted_failed_uploads(failures) {
+        tracing::warn!(%error, "failed to persist upload failures");
+    }
+}
+
+fn load_initial_failed_uploads() -> Vec<ReplayUploadRequest> {
+    match load_persisted_failed_uploads() {
+        Ok(failures) => failures,
+        Err(error) => {
+            tracing::warn!(%error, "failed to load persisted upload failures");
+            Vec::new()
+        }
+    }
+}
+
+fn log_upload_failures(summary: &BackfillSummary) {
+    for failure in &summary.failed_uploads {
+        let reason = failure.reason.as_deref().unwrap_or("unknown failure");
+        tracing::warn!(
+            target_name = %failure.target_name,
+            match_id = %failure.match_id,
+            reason,
+            "upload request recorded failed upload"
+        );
+    }
 }
 
 fn upload_should_wait_for_history(
@@ -331,7 +371,7 @@ fn App() -> Element {
     let upload_queue_completed = use_signal(|| 0_usize);
     let upload_queue_total = use_signal(|| 0_usize);
     let mut sync_run = use_signal(SyncRunState::default);
-    let mut failed_uploads = use_signal(Vec::<ReplayUploadRequest>::new);
+    let mut failed_uploads = use_signal(load_initial_failed_uploads);
     let account_auth_prompt = use_signal(|| None::<AccountAuthPrompt>);
     let account_auth_running = use_signal(|| false);
     let account_auth_task = use_signal(|| None::<Task>);
@@ -430,7 +470,10 @@ fn App() -> Element {
                 spawn(async move {
                     match backfill_upload_destinations().await {
                         Ok(run_summary) => {
-                            failed_uploads.set(dedupe_upload_requests(run_summary.failed_uploads.clone()));
+                            let failures = dedupe_upload_requests(run_summary.failed_uploads.clone());
+                            log_upload_failures(&run_summary);
+                            failed_uploads.set(failures.clone());
+                            persist_failed_uploads(&failures);
                             sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
                             history_message.set(format_backfill_message(
                                 format!(
@@ -445,6 +488,7 @@ fn App() -> Element {
                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }
                         Err(error) => {
+                            tracing::warn!(%error, "sync upload destination run failed");
                             sync_run.set(sync_run().failed(now_label(), error.clone()));
                             history_message.set(error);
                         }
