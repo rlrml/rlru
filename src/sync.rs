@@ -1,6 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex as StdMutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use secrecy::ExposeSecret;
@@ -19,6 +21,40 @@ use crate::upload::{
 };
 
 pub const MAX_CONCURRENT_UPLOADS: usize = 3;
+
+/// How long to skip an account after PsyNet rejects its login with
+/// `LoginBanned`. Immediately retrying extends the throttle, so back off and
+/// let it decay.
+const LOGIN_BAN_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+
+/// Accounts currently in a LoginBanned cooldown, as (account name, skip-until).
+/// Process-wide because each upload request constructs a fresh `SyncService`.
+static LOGIN_BANS: StdMutex<Vec<(String, Instant)>> = StdMutex::new(Vec::new());
+
+fn login_ban_remaining(account_name: &str) -> Option<Duration> {
+    let mut bans = LOGIN_BANS.lock().expect("login ban lock poisoned");
+    let now = Instant::now();
+    bans.retain(|(_, until)| *until > now);
+    bans.iter()
+        .find(|(name, _)| name == account_name)
+        .map(|(_, until)| *until - now)
+}
+
+fn record_login_ban(account_name: &str) {
+    let mut bans = LOGIN_BANS.lock().expect("login ban lock poisoned");
+    let until = Instant::now() + LOGIN_BAN_COOLDOWN;
+    if let Some(entry) = bans.iter_mut().find(|(name, _)| name == account_name) {
+        entry.1 = until;
+    } else {
+        bans.push((account_name.to_string(), until));
+    }
+}
+
+fn is_login_ban_error(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string().contains("LoginBanned"))
+}
 
 /// Current per-playlist skills keyed by the full PsyNet PlayerID string, as
 /// fetched once per sync from `Skills/GetPlayersSkills`, together with the time
@@ -157,6 +193,20 @@ impl SyncService {
             }
         };
         for account in accounts_to_upload {
+            if let Some(remaining) = login_ban_remaining(&account.account.name) {
+                let minutes = remaining.as_secs().div_ceil(60);
+                let reason = format!(
+                    "account {} is in PsyNet login-ban cooldown; retrying in about {minutes} min",
+                    account.account.name
+                );
+                tracing::warn!(
+                    account = %account.account.name,
+                    cooldown_remaining_secs = remaining.as_secs(),
+                    "skipping account in login-ban cooldown"
+                );
+                summary.sync_errors.push(reason);
+                continue;
+            }
             summary.accounts_seen += 1;
             match self
                 .sync_account(account.account, &account.token, &options)
@@ -164,6 +214,9 @@ impl SyncService {
             {
                 Ok(account_summary) => summary.merge(account_summary),
                 Err(error) => {
+                    if is_login_ban_error(&error) {
+                        record_login_ban(&account.account.name);
+                    }
                     let reason = format!(
                         "failed to sync account {}: {}",
                         account.account.name,

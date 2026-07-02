@@ -1,6 +1,5 @@
 use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
-use futures_util::stream::{FuturesUnordered, StreamExt};
 #[cfg(not(target_arch = "wasm32"))]
 use tracing_subscriber::EnvFilter;
 
@@ -150,35 +149,36 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
 
     spawn(async move {
         let mut aggregate = BackfillSummary::default();
-        let mut in_flight = FuturesUnordered::new();
 
+        // Drain the queue in batches: one upload_history_replays call handles
+        // every pending request in a single sync pass per target, so a large
+        // retry queue costs one PsyNet login per account instead of one per
+        // match (rapid repeated logins trip PsyNet's LoginBanned throttling).
         loop {
-            while in_flight.len() < MAX_CONCURRENT_UPLOADS {
-                let Some(request) = next_queued_upload(&active_uploads()) else {
-                    break;
-                };
-                mark_uploading(&mut active_uploads, &request);
-                history_message.set(upload_start_message(&request, in_flight.len() + 1));
-                in_flight.push(run_upload_request(request));
-            }
-
-            if in_flight.is_empty() {
+            let batch = queued_upload_requests(&active_uploads());
+            if batch.is_empty() {
                 break;
             }
+            for request in &batch {
+                mark_uploading(&mut active_uploads, request);
+            }
+            history_message.set(batch_start_message(&batch));
 
-            let Some(completed) = in_flight.next().await else {
-                break;
-            };
+            let completed = run_upload_batch(batch).await;
+
             let persisted_failures =
-                update_failed_uploads(&mut failed_uploads, &completed.request, &completed.summary);
+                update_failed_uploads(&mut failed_uploads, &completed.requests, &completed.summary);
             persist_failed_uploads(&persisted_failures);
-            if upload_should_wait_for_history(&completed.request, &completed.summary) {
-                mark_refreshing(&mut active_uploads, &completed.request);
-            } else {
-                remove_active_upload(&mut active_uploads, &completed.request);
+            for request in &completed.requests {
+                if upload_should_wait_for_history(request, &completed.summary) {
+                    mark_refreshing(&mut active_uploads, request);
+                } else {
+                    remove_active_upload(&mut active_uploads, request);
+                }
             }
+            let completed_count = completed.requests.len();
             merge_backfill_summary(&mut aggregate, completed.summary);
-            upload_queue_completed.set(upload_queue_completed().saturating_add(1));
+            upload_queue_completed.set(upload_queue_completed().saturating_add(completed_count));
             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
             history_message.set(format!(
                 "Completed {} of {} queued uploads",
@@ -202,50 +202,65 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
     });
 }
 
-fn next_queued_upload(active_uploads: &[ActiveUpload]) -> Option<ReplayUploadRequest> {
+fn queued_upload_requests(active_uploads: &[ActiveUpload]) -> Vec<ReplayUploadRequest> {
     active_uploads
         .iter()
         .filter(|upload| upload.phase == UploadPhase::Pending)
         .map(|upload| upload.request.clone())
-        .next()
+        .collect()
 }
 
-fn upload_start_message(request: &ReplayUploadRequest, active_count: usize) -> String {
-    if active_count == 1 {
-        format!(
+fn batch_start_message(batch: &[ReplayUploadRequest]) -> String {
+    match batch {
+        [request] => format!(
             "Downloading replay, fetching metadata, and uploading {} to {}",
             short_match_id(&request.match_id),
             request.target_name
-        )
-    } else {
-        format!(
-            "Running {} concurrently; started {} to {}",
-            upload_count_label(active_count),
-            short_match_id(&request.match_id),
-            request.target_name
-        )
+        ),
+        _ => format!(
+            "Syncing accounts and uploading {} in one pass",
+            upload_count_label(batch.len())
+        ),
     }
 }
 
-async fn run_upload_request(request: ReplayUploadRequest) -> CompletedUpload {
-    let summary = match upload_history_replay(request.clone()).await {
+async fn run_upload_batch(requests: Vec<ReplayUploadRequest>) -> CompletedBatch {
+    let summary = match upload_history_replays(requests.clone()).await {
         Ok(summary) => summary,
         Err(error) => {
             tracing::warn!(
-                target_name = %request.target_name,
-                match_id = %request.match_id,
+                request_count = requests.len(),
                 %error,
-                "upload request failed before replay upload completed"
+                "upload batch failed before replay uploads completed"
             );
-            failed_upload_summary(&request, error)
+            failed_batch_summary(&requests, error)
         }
     };
     log_upload_failures(&summary);
-    CompletedUpload { request, summary }
+    CompletedBatch { requests, summary }
 }
 
-struct CompletedUpload {
-    request: ReplayUploadRequest,
+fn failed_batch_summary(requests: &[ReplayUploadRequest], reason: String) -> BackfillSummary {
+    BackfillSummary {
+        failed: requests.len(),
+        failed_match_ids: requests
+            .iter()
+            .map(|request| request.match_id.clone())
+            .collect(),
+        failed_uploads: requests
+            .iter()
+            .map(|request| ReplayUploadRequest {
+                target_name: request.target_name.clone(),
+                match_id: request.match_id.clone(),
+                reason: Some(reason.clone()),
+            })
+            .collect(),
+        ..BackfillSummary::default()
+    }
+}
+
+struct CompletedBatch {
+    requests: Vec<ReplayUploadRequest>,
     summary: BackfillSummary,
 }
 
@@ -288,11 +303,15 @@ fn remove_active_upload(
 
 fn update_failed_uploads(
     failed_uploads: &mut Signal<Vec<ReplayUploadRequest>>,
-    request: &ReplayUploadRequest,
+    requests: &[ReplayUploadRequest],
     run_summary: &BackfillSummary,
 ) -> Vec<ReplayUploadRequest> {
     let mut failures = failed_uploads();
-    failures.retain(|failure| !is_same_upload_request(failure, request));
+    failures.retain(|failure| {
+        !requests
+            .iter()
+            .any(|request| is_same_upload_request(failure, request))
+    });
     for failure in &run_summary.failed_uploads {
         upsert_failed_upload(&mut failures, failure.clone());
     }
@@ -817,24 +836,44 @@ mod tests {
     }
 
     #[test]
-    fn next_queued_upload_selects_only_pending_work() {
+    fn queued_upload_requests_selects_only_pending_work() {
         let pending = request("pending-match");
+        let also_pending = request("second-pending-match");
         let active_uploads = vec![
             ActiveUpload::uploading(request("running-match")),
             ActiveUpload::refreshing(request("refreshing-match")),
             ActiveUpload::pending(pending.clone()),
+            ActiveUpload::pending(also_pending.clone()),
         ];
 
-        assert_eq!(next_queued_upload(&active_uploads), Some(pending));
+        assert_eq!(
+            queued_upload_requests(&active_uploads),
+            vec![pending, also_pending]
+        );
     }
 
     #[test]
-    fn next_queued_upload_returns_none_without_pending_work() {
+    fn queued_upload_requests_empty_without_pending_work() {
         let active_uploads = vec![
             ActiveUpload::uploading(request("running-match")),
             ActiveUpload::refreshing(request("refreshing-match")),
         ];
 
-        assert_eq!(next_queued_upload(&active_uploads), None);
+        assert!(queued_upload_requests(&active_uploads).is_empty());
+    }
+
+    #[test]
+    fn failed_batch_summary_marks_every_request_failed() {
+        let requests = vec![request("match-1"), request("match-2")];
+
+        let summary = failed_batch_summary(&requests, "PsyNet down".to_string());
+
+        assert_eq!(summary.failed, 2);
+        assert_eq!(summary.uploaded, 0);
+        assert_eq!(summary.failed_match_ids, vec!["match-1", "match-2"]);
+        assert!(summary
+            .failed_uploads
+            .iter()
+            .all(|failure| failure.reason.as_deref() == Some("PsyNet down")));
     }
 }

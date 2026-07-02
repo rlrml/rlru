@@ -4,10 +4,10 @@ pub(crate) use rlru::app::{
     dedupe_upload_requests, failed_upload, finish_account_auth, format_backfill_message,
     is_same_upload, is_same_upload_request, load_history, load_persisted_failed_uploads,
     load_summary, now_label, remove_account, save_auto_upload, save_overview_config,
-    save_persisted_failed_uploads, short_match_id, upload_failure_reason, upload_history_replay,
+    save_persisted_failed_uploads, short_match_id, upload_failure_reason, upload_history_replays,
     upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary, BackfillSummary,
     HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
-    SyncRunState, MAX_CONCURRENT_UPLOADS,
+    SyncRunState,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -334,25 +334,6 @@ pub(crate) fn merge_backfill_summary(summary: &mut BackfillSummary, next: Backfi
     }
 }
 
-pub(crate) fn failed_upload_summary(
-    request: &ReplayUploadRequest,
-    reason: String,
-) -> BackfillSummary {
-    BackfillSummary {
-        uploaded: 0,
-        duplicates: 0,
-        cached: 0,
-        failed: 1,
-        failed_match_ids: vec![request.match_id.clone()],
-        failed_uploads: vec![ReplayUploadRequest {
-            target_name: request.target_name.clone(),
-            match_id: request.match_id.clone(),
-            reason: Some(reason),
-        }],
-        sync_errors: Vec::new(),
-    }
-}
-
 fn upload_button_label(
     uploaded_without_location: bool,
     active_state: Option<&UploadPhase>,
@@ -659,9 +640,6 @@ pub(crate) struct BackfillSummary {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) const MAX_CONCURRENT_UPLOADS: usize = 3;
-
-#[cfg(target_arch = "wasm32")]
 pub(crate) fn now_label() -> String {
     "now".to_string()
 }
@@ -834,16 +812,6 @@ pub(crate) async fn backfill_upload_destinations() -> Result<BackfillSummary, St
     Ok(BackfillSummary {
         uploaded: 1,
         cached: 1,
-        ..BackfillSummary::default()
-    })
-}
-
-#[cfg(target_arch = "wasm32")]
-pub(crate) async fn upload_history_replay(
-    _request: ReplayUploadRequest,
-) -> Result<BackfillSummary, String> {
-    Ok(BackfillSummary {
-        uploaded: 1,
         ..BackfillSummary::default()
     })
 }

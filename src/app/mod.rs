@@ -19,6 +19,12 @@ use crate::Config;
 
 pub const MAX_CONCURRENT_UPLOADS: usize = crate::sync::MAX_CONCURRENT_UPLOADS;
 
+/// Serializes app operations that open PsyNet sessions (uploads, sync runs,
+/// history loads). Concurrent logins — especially for the same account — trip
+/// PsyNet's LoginBanned throttling and race the websocket ("Sending after
+/// closing is not allowed").
+static PSYNET_SESSION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// Renders an anyhow error together with its full cause chain, so the root
 /// cause (e.g. the PsyNet/HTTP error behind "failed to sync account X") is
 /// preserved when the error is flattened into a user-facing string. Plain
@@ -190,11 +196,12 @@ fn unavailable_summary(error: String) -> AppSummary {
 }
 
 pub async fn load_history() -> Result<Vec<HistoryRow>, String> {
+    let _psynet_guard = PSYNET_SESSION_LOCK.lock().await;
     let entries = AppContext::load(false)?
         .sync_service()
         .current_history(None)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error_chain(&error))?;
 
     Ok(entries
         .into_iter()
@@ -233,6 +240,7 @@ pub async fn load_history() -> Result<Vec<HistoryRow>, String> {
 }
 
 pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
+    let _psynet_guard = PSYNET_SESSION_LOCK.lock().await;
     let summary = AppContext::load(true)?
         .sync_service()
         .run_once_with_options(SyncOptions {
@@ -260,6 +268,7 @@ pub async fn upload_history_replays(
         return Ok(BackfillSummary::default());
     }
 
+    let _psynet_guard = PSYNET_SESSION_LOCK.lock().await;
     let context = AppContext::load(true)?;
     let mut aggregate = BackfillSummary::default();
 
