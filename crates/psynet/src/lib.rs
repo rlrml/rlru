@@ -152,6 +152,9 @@ impl PsyNetClient {
         });
 
         Ok(PsyNetRpc {
+            _closer: Arc::new(SocketCloser {
+                write: Arc::clone(&write),
+            }),
             write,
             pending,
             request_ids: Arc::clone(&self.request_ids),
@@ -235,6 +238,25 @@ pub struct PsyNetRpc {
     pending: PendingRequests,
     request_ids: Arc<RequestIdCounter>,
     local_player_id: PlayerId,
+    /// Closes the websocket when the last clone of this session drops. A Drop
+    /// impl on PsyNetRpc itself would fire on every clone and close the socket
+    /// out from under the remaining ones.
+    _closer: Arc<SocketCloser>,
+}
+
+#[derive(Debug)]
+struct SocketCloser {
+    write: Arc<Mutex<WsWrite>>,
+}
+
+impl Drop for SocketCloser {
+    fn drop(&mut self) {
+        let write = Arc::clone(&self.write);
+        tokio::spawn(async move {
+            let _ = write.lock().await.send(Message::Close(None)).await;
+            sleep(Duration::from_millis(10)).await;
+        });
+    }
 }
 
 impl PsyNetRpc {
@@ -317,16 +339,6 @@ impl PsyNetRpc {
             .result
             .context("PsyNet response did not include Result")?;
         serde_json::from_str(result.get()).context("failed to parse PsyNet response Result")
-    }
-}
-
-impl Drop for PsyNetRpc {
-    fn drop(&mut self) {
-        let write = Arc::clone(&self.write);
-        tokio::spawn(async move {
-            let _ = write.lock().await.send(Message::Close(None)).await;
-            sleep(Duration::from_millis(10)).await;
-        });
     }
 }
 

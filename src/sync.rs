@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex as StdMutex;
+use std::sync::{LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -14,7 +14,7 @@ use crate::auth::AuthManager;
 use crate::auth::EosTokenResponse;
 use crate::config::{AccountConfig, Config, RankUploadConfig, UploadDestinationConfig};
 use crate::paths::AppPaths;
-use crate::psynet::{MatchEntry, PlayerId, PlayerSkill, PsyNetClient};
+use crate::psynet::{MatchEntry, PlayerId, PlayerSkill, PsyNetClient, PsyNetRpc};
 use crate::upload::{
     CurrentSkill, MmrPlayer, MmrSkill, MmrUpload, RankBundle, RankBundlePlayer, RankSnapshot,
     ReplayUploader, UploadCache, UploadOutcome,
@@ -54,6 +54,43 @@ fn is_login_ban_error(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(|cause| cause.to_string().contains("LoginBanned"))
+}
+
+/// How long an idle cached PsyNet session is kept before its socket is closed.
+/// PsyNet closes idle sockets on its own schedule anyway; stale sessions are
+/// also detected lazily (a request fails, we reconnect once), so this only
+/// bounds how long we hold a socket nobody is using.
+const PSYNET_SESSION_IDLE_TTL: Duration = Duration::from_secs(5 * 60);
+
+struct CachedPsyNetSession {
+    rpc: PsyNetRpc,
+    last_used: Instant,
+}
+
+/// Authenticated PsyNet sessions cached per account id. The login
+/// (`Auth/AuthPlayer` + websocket connect) is the operation PsyNet throttles
+/// with LoginBanned, so one session is reused across sync runs, history loads,
+/// and presence checks instead of logging in once per operation. Process-wide
+/// because callers construct a fresh `SyncService` per operation.
+static PSYNET_SESSIONS: LazyLock<tokio::sync::Mutex<HashMap<String, CachedPsyNetSession>>> =
+    LazyLock::new(tokio::sync::Mutex::default);
+
+async fn evict_psynet_session(account_id: &str) {
+    if let Some(session) = PSYNET_SESSIONS.lock().await.remove(account_id) {
+        let _ = session.rpc.close().await;
+    }
+}
+
+/// True for errors that mean the websocket session itself is dead or wedged
+/// (as opposed to a request-level PsyNet error), in which case a reconnect is
+/// worth one retry. Matches the psynet crate's error contexts.
+fn is_stale_session_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        let text = cause.to_string();
+        text.contains("failed to send PsyNet websocket request")
+            || text.contains("timed out waiting for PsyNet response")
+            || text.contains("PsyNet response channel closed")
+    })
 }
 
 /// Current per-playlist skills keyed by the full PsyNet PlayerID string, as
@@ -259,12 +296,13 @@ impl SyncService {
                 .restore_or_refresh()
                 .await
                 .with_context(|| format!("failed to restore auth for account {}", account.name))?;
-            let rpc = self
-                .psynet
-                .auth_player(&token.account_id, token.access_token.expose_secret())
+            let matches = self
+                .with_account_session(
+                    &token.account_id,
+                    token.access_token.expose_secret(),
+                    |rpc| async move { rpc.get_match_history().await },
+                )
                 .await?;
-            let matches = rpc.get_match_history().await?;
-            let _ = rpc.close().await;
 
             entries.extend(matches.into_iter().map(|entry| {
                 let match_id = entry.match_info.match_guid.clone();
@@ -323,18 +361,22 @@ impl SyncService {
                 presence_account.name
             )
         })?;
-        let rpc = self
-            .psynet
-            .auth_player(&token.account_id, token.access_token.expose_secret())
-            .await?;
         let profile_ids = accounts
             .iter()
             .map(|account| {
                 PlayerId::new(account.account.platform.clone(), &account.token.account_id)
             })
             .collect::<Vec<_>>();
-        let profiles = rpc.get_profiles(profile_ids).await?;
-        let _ = rpc.close().await;
+        let profiles = self
+            .with_account_session(
+                &token.account_id,
+                token.access_token.expose_secret(),
+                |rpc| {
+                    let profile_ids = profile_ids.clone();
+                    async move { rpc.get_profiles(profile_ids).await }
+                },
+            )
+            .await?;
 
         let online = profiles
             .iter()
@@ -360,34 +402,106 @@ impl SyncService {
             .collect())
     }
 
+    /// Returns a live PsyNet session for the account, reusing a cached one when
+    /// available (avoiding the LoginBanned-throttled login). The bool reports
+    /// whether the session came from the cache, so callers know a failure may
+    /// just mean the cached socket went stale.
+    async fn account_session(
+        &self,
+        account_id: &str,
+        access_token: &str,
+    ) -> Result<(PsyNetRpc, bool)> {
+        let mut sessions = PSYNET_SESSIONS.lock().await;
+        let now = Instant::now();
+
+        let expired: Vec<String> = sessions
+            .iter()
+            .filter(|(_, session)| now.duration_since(session.last_used) > PSYNET_SESSION_IDLE_TTL)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in expired {
+            if let Some(session) = sessions.remove(&key) {
+                let _ = session.rpc.close().await;
+            }
+        }
+
+        if let Some(session) = sessions.get_mut(account_id) {
+            session.last_used = now;
+            return Ok((session.rpc.clone(), true));
+        }
+
+        let rpc = self.psynet.auth_player(account_id, access_token).await?;
+        sessions.insert(
+            account_id.to_string(),
+            CachedPsyNetSession {
+                rpc: rpc.clone(),
+                last_used: now,
+            },
+        );
+        Ok((rpc, false))
+    }
+
+    /// Runs `operation` against the account's PsyNet session. When a cached
+    /// session turns out to be stale (socket closed server-side), reconnects
+    /// with a fresh login and retries the operation once.
+    async fn with_account_session<T, F, Fut>(
+        &self,
+        account_id: &str,
+        access_token: &str,
+        operation: F,
+    ) -> Result<T>
+    where
+        F: Fn(PsyNetRpc) -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let (rpc, from_cache) = self.account_session(account_id, access_token).await?;
+        match operation(rpc).await {
+            Err(error) if from_cache && is_stale_session_error(&error) => {
+                tracing::info!(
+                    error = %error_chain(&error),
+                    "cached PsyNet session went stale; reconnecting"
+                );
+                evict_psynet_session(account_id).await;
+                let (rpc, _) = self.account_session(account_id, access_token).await?;
+                operation(rpc).await
+            }
+            result => result,
+        }
+    }
+
     async fn sync_account(
         &self,
         account: &AccountConfig,
         token: &EosTokenResponse,
         options: &SyncOptions,
     ) -> Result<SyncSummary> {
-        let rpc = self
-            .psynet
-            .auth_player(&token.account_id, token.access_token.expose_secret())
-            .await?;
-        let profiles = rpc
-            .get_profiles(vec![PlayerId::new(
-                account.platform.clone(),
+        let account_player_id = PlayerId::new(account.platform.clone(), &token.account_id);
+        let (matches, player_skills) = self
+            .with_account_session(
                 &token.account_id,
-            )])
-            .await
-            .unwrap_or_default();
-        if let Some(profile) = profiles.first() {
-            tracing::info!(
-                player_name = %profile.player_name,
-                presence = %profile.presence_state,
-                "connected to PsyNet account"
-            );
-        }
+                token.access_token.expose_secret(),
+                |rpc| {
+                    let account_player_id = account_player_id.clone();
+                    async move {
+                        let profiles = rpc
+                            .get_profiles(vec![account_player_id])
+                            .await
+                            .unwrap_or_default();
+                        if let Some(profile) = profiles.first() {
+                            tracing::info!(
+                                player_name = %profile.player_name,
+                                presence = %profile.presence_state,
+                                "connected to PsyNet account"
+                            );
+                        }
 
-        let matches = rpc.get_match_history().await?;
-        let player_skills = fetch_player_skills(&rpc, &matches).await;
-        let _ = rpc.close().await;
+                        let matches = rpc.get_match_history().await?;
+                        let player_skills = fetch_player_skills(&rpc, &matches).await;
+                        Ok((matches, player_skills))
+                    }
+                },
+            )
+            .await?;
         self.upload_matches(matches, &player_skills, options, account, &token.account_id)
             .await
     }
