@@ -28,6 +28,27 @@ pub fn format_backfill_message(message: String, failed_uploads: &[ReplayUploadRe
     }
 }
 
+/// Appends a short account-level sync-error suffix to a run message. These are
+/// distinct from per-match upload failures: they explain why a run may have seen
+/// fewer (or zero) matches — e.g. an account failed to authenticate or PsyNet
+/// was unreachable. Surfacing them keeps a partially-failed run from looking
+/// like a clean success.
+pub fn append_sync_errors(message: String, sync_errors: &[String]) -> String {
+    if sync_errors.is_empty() {
+        return message;
+    }
+    let detail = if sync_errors.len() == 1 {
+        format!("account issue: {}", sync_errors[0])
+    } else {
+        format!(
+            "{} account issues; first: {}",
+            sync_errors.len(),
+            sync_errors[0]
+        )
+    };
+    format!("{message}; {detail}")
+}
+
 pub fn dedupe_upload_requests(requests: Vec<ReplayUploadRequest>) -> Vec<ReplayUploadRequest> {
     let mut deduped = Vec::new();
     for request in requests {
@@ -176,4 +197,38 @@ pub(super) fn format_record_start_timestamp(timestamp: i64) -> String {
         .single()
         .map(|datetime| datetime.format("%Y-%m-%d %H:%M:%S %Z").to_string())
         .unwrap_or_else(|| timestamp.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn append_sync_errors_no_op_when_empty() {
+        assert_eq!(append_sync_errors("done".to_string(), &[]), "done");
+    }
+
+    #[test]
+    fn append_sync_errors_names_single_issue() {
+        let message = append_sync_errors(
+            "Sync complete: 0 uploaded".to_string(),
+            &["failed to sync account bob: PsyNet timed out".to_string()],
+        );
+        assert_eq!(
+            message,
+            "Sync complete: 0 uploaded; account issue: failed to sync account bob: PsyNet timed out"
+        );
+    }
+
+    #[test]
+    fn append_sync_errors_counts_multiple_issues() {
+        let message = append_sync_errors(
+            "Sync complete".to_string(),
+            &["first problem".to_string(), "second problem".to_string()],
+        );
+        assert_eq!(
+            message,
+            "Sync complete; 2 account issues; first: first problem"
+        );
+    }
 }

@@ -44,6 +44,11 @@ pub struct SyncSummary {
     pub failed: usize,
     pub failed_match_ids: Vec<String>,
     pub failed_uploads: Vec<FailedUpload>,
+    /// Account-level failures (auth restore, PsyNet connection, presence
+    /// check) that prevented some or all matches from being considered. These
+    /// are not per-match upload failures; they explain why matches may be
+    /// missing from this run entirely.
+    pub sync_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,25 +122,61 @@ impl SyncService {
             .filter(|account| account.sync_enabled)
         {
             let auth = AuthManager::for_account(&self.paths, account);
-            let token = auth
-                .restore_or_refresh()
-                .await
-                .with_context(|| format!("failed to restore auth for account {}", account.name))?;
-            active_accounts.push(AuthenticatedAccount { account, token });
+            match auth.restore_or_refresh().await {
+                Ok(token) => active_accounts.push(AuthenticatedAccount { account, token }),
+                Err(error) => {
+                    let reason = format!(
+                        "failed to restore auth for account {}: {}",
+                        account.name,
+                        error_chain(&error)
+                    );
+                    tracing::warn!(
+                        account = %account.name,
+                        error = %error_chain(&error),
+                        "skipping account: auth restore failed"
+                    );
+                    summary.sync_errors.push(reason);
+                }
+            }
         }
 
         let accounts_to_upload = if options.include_online {
             active_accounts
         } else {
-            self.filter_connected_accounts(active_accounts).await?
+            match self.filter_connected_accounts(active_accounts).await {
+                Ok(accounts) => accounts,
+                Err(error) => {
+                    let reason = format!(
+                        "presence check failed; skipping uploads this run: {}",
+                        error_chain(&error)
+                    );
+                    tracing::warn!(error = %error_chain(&error), "presence check failed");
+                    summary.sync_errors.push(reason);
+                    Vec::new()
+                }
+            }
         };
         for account in accounts_to_upload {
             summary.accounts_seen += 1;
-            let account_summary = self
+            match self
                 .sync_account(account.account, &account.token, &options)
                 .await
-                .with_context(|| format!("failed to sync account {}", account.account.name))?;
-            summary.merge(account_summary);
+            {
+                Ok(account_summary) => summary.merge(account_summary),
+                Err(error) => {
+                    let reason = format!(
+                        "failed to sync account {}: {}",
+                        account.account.name,
+                        error_chain(&error)
+                    );
+                    tracing::warn!(
+                        account = %account.account.name,
+                        error = %error_chain(&error),
+                        "account sync failed; continuing with remaining accounts"
+                    );
+                    summary.sync_errors.push(reason);
+                }
+            }
         }
         Ok(summary)
     }
@@ -499,9 +540,11 @@ impl SyncService {
                         target = %target.target.name,
                         "failed to upload replay"
                     );
+                    // The chain already names the phase ("X is unreachable",
+                    // "X upload failed with ..."), so no extra prefix.
                     ReplayUploadTargetResult::Failed {
                         target_name: target.target.name,
-                        reason: format!("upload failed: {}", error_chain(&error)),
+                        reason: error_chain(&error),
                     }
                 }
             };
@@ -957,6 +1000,7 @@ impl SyncSummary {
         self.failed += other.failed;
         self.failed_match_ids.extend(other.failed_match_ids);
         self.failed_uploads.extend(other.failed_uploads);
+        self.sync_errors.extend(other.sync_errors);
     }
 }
 
@@ -982,6 +1026,9 @@ impl std::fmt::Display for SyncSummary {
                 "failed_upload: {} {}: {}",
                 failure.target_name, failure.match_id, failure.reason
             )?;
+        }
+        for error in &self.sync_errors {
+            writeln!(formatter, "sync_error: {error}")?;
         }
         Ok(())
     }
@@ -1217,6 +1264,7 @@ mod tests {
                 match_id: "match-1".to_string(),
                 reason: "token missing".to_string(),
             }],
+            sync_errors: vec!["failed to sync account bob: boom".to_string()],
         };
 
         assert_eq!(
@@ -1231,6 +1279,7 @@ mod tests {
                 "failed: 1\n",
                 "failed_match_ids: match-1\n",
                 "failed_upload: Rocket Sense match-1: token missing\n",
+                "sync_error: failed to sync account bob: boom\n",
             )
         );
     }

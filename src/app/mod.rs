@@ -19,6 +19,18 @@ use crate::Config;
 
 pub const MAX_CONCURRENT_UPLOADS: usize = crate::sync::MAX_CONCURRENT_UPLOADS;
 
+/// Renders an anyhow error together with its full cause chain, so the root
+/// cause (e.g. the PsyNet/HTTP error behind "failed to sync account X") is
+/// preserved when the error is flattened into a user-facing string. Plain
+/// `error.to_string()` shows only the outermost context.
+pub(crate) fn error_chain(error: &anyhow::Error) -> String {
+    error
+        .chain()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
 #[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
 struct UploadFailureState {
     failed_uploads: Vec<ReplayUploadRequest>,
@@ -230,7 +242,7 @@ pub async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
             match_ids: Vec::new(),
         })
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| error_chain(&error))?;
 
     Ok(summary.into())
 }
@@ -263,17 +275,31 @@ pub async fn upload_history_replays(
         {
             Ok(summary) => summary,
             Err(error) => {
+                let reason = error_chain(&error);
                 tracing::warn!(
                     target_name = %target_name,
                     match_ids = ?match_ids,
-                    %error,
+                    error = %reason,
                     "upload request failed while running sync service"
                 );
-                return Err(error.to_string());
+                return Err(reason);
             }
         };
 
         if summary.matches_seen == 0 {
+            // With per-account isolation, an account whose sync failed no longer
+            // aborts the run — it lands in sync_errors and simply contributes no
+            // matches. Surface that instead of the misleading "not found".
+            if !summary.sync_errors.is_empty() {
+                let reason = summary.sync_errors.join("; ");
+                tracing::warn!(
+                    target_name = %target_name,
+                    match_ids = ?match_ids,
+                    error = %reason,
+                    "upload request could not run because account sync failed"
+                );
+                return Err(reason);
+            }
             tracing::warn!(
                 target_name = %target_name,
                 match_ids = ?match_ids,
@@ -310,6 +336,11 @@ fn merge_backfill_summary(summary: &mut BackfillSummary, next: BackfillSummary) 
     summary.failed_match_ids.extend(next.failed_match_ids);
     for failed_upload in next.failed_uploads {
         upsert_failed_upload(&mut summary.failed_uploads, failed_upload);
+    }
+    for sync_error in next.sync_errors {
+        if !summary.sync_errors.contains(&sync_error) {
+            summary.sync_errors.push(sync_error);
+        }
     }
 }
 
@@ -593,7 +624,7 @@ mod tests {
                 cached: 3,
                 failed: 4,
                 failed_match_ids: vec!["old-match".to_string()],
-                failed_uploads: Vec::new(),
+                ..BackfillSummary::default()
             }),
             last_error: Some("old-error".to_string()),
         };
@@ -609,11 +640,7 @@ mod tests {
             "new-complete".to_string(),
             BackfillSummary {
                 uploaded: 5,
-                duplicates: 0,
-                cached: 0,
-                failed: 0,
-                failed_match_ids: Vec::new(),
-                failed_uploads: Vec::new(),
+                ..BackfillSummary::default()
             },
         );
         assert!(!completed.running);

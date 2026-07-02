@@ -16,6 +16,10 @@ use crate::state_file::write_atomically;
 const HISTORY_PER_ACCOUNT: usize = 20;
 const MAX_CACHE_SIZE_FACTOR: usize = 2;
 const RESPONSE_BODY_LOG_LIMIT: usize = 4096;
+/// Shorter excerpt limit for failure reasons surfaced in the UI, where a raw
+/// HTML error page would drown the useful part (the status line).
+const REASON_BODY_LIMIT: usize = 200;
+const TRANSIENT_RETRY_ATTEMPTS: u32 = 3;
 
 #[derive(Debug, Clone)]
 pub struct ReplayUploader {
@@ -46,22 +50,75 @@ impl ReplayUploader {
             return Ok(());
         }
 
+        let endpoint = target.endpoint_url(&target.ping.path)?;
         let response = self
-            .request_with_auth_header(
-                self.http.get(target.endpoint_url(&target.ping.path)?),
-                auth_header,
+            .send_with_retries(
+                || {
+                    self.request_with_auth_header(
+                        self.http.get(endpoint.clone()),
+                        auth_header.clone(),
+                    )
+                },
+                "ping",
+                &target.name,
             )
-            .send()
             .await
-            .with_context(|| format!("failed to ping {}", target.name))?;
+            .with_context(|| format!("failed to reach {} for pre-upload ping", target.name))?;
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            bail!("{} ping failed with {status}: {body}", target.name);
+            bail!(
+                "{} is unreachable: ping returned {status} ({})",
+                target.name,
+                response_body_excerpt_with_limit(&body, REASON_BODY_LIMIT)
+            );
         }
 
         Ok(())
+    }
+
+    /// Sends a request, retrying transient failures (connection/timeout errors
+    /// and 5xx responses) with exponential backoff. The final attempt's
+    /// response is returned as-is so callers classify the status themselves.
+    async fn send_with_retries<F>(
+        &self,
+        mut build_request: F,
+        operation: &str,
+        target_name: &str,
+    ) -> reqwest::Result<reqwest::Response>
+    where
+        F: FnMut() -> reqwest::RequestBuilder,
+    {
+        let mut attempt = 1;
+        loop {
+            let result = build_request().send().await;
+            let transient = match &result {
+                Ok(response) => response.status().is_server_error(),
+                Err(error) => error.is_connect() || error.is_timeout(),
+            };
+            if !transient || attempt >= TRANSIENT_RETRY_ATTEMPTS {
+                return result;
+            }
+            match &result {
+                Ok(response) => tracing::warn!(
+                    target = %target_name,
+                    operation,
+                    status = %response.status(),
+                    attempt,
+                    "transient server error; retrying"
+                ),
+                Err(error) => tracing::warn!(
+                    target = %target_name,
+                    operation,
+                    %error,
+                    attempt,
+                    "transient send failure; retrying"
+                ),
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(1 << (attempt - 1))).await;
+            attempt += 1;
+        }
     }
 
     pub async fn upload_replay(
@@ -121,29 +178,37 @@ impl ReplayUploader {
         let bytes = fs::read(file_path)
             .with_context(|| format!("failed to read replay {}", file_path.display()))?;
         let file_size = bytes.len();
-        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
-        let mut form =
-            reqwest::multipart::Form::new().part(target.replay_upload.file_field.clone(), part);
 
         // Bundle player ranks into the same upload when the destination supports
         // it (Rocket Sense). Replay files do not carry ranks, so this is how the
         // metadata travels alongside the file in a single request.
-        if let (RankUploadConfig::Bundled { field }, Some(bundle)) =
-            (&target.rank_upload, ranks_bundle)
-        {
-            if !bundle.players.is_empty() {
+        let rank_field_json = match (&target.rank_upload, ranks_bundle) {
+            (RankUploadConfig::Bundled { field }, Some(bundle)) if !bundle.players.is_empty() => {
                 let json =
                     serde_json::to_string(bundle).context("failed to serialize rank bundle")?;
-                form = form.text(field.clone(), json);
+                Some((field.clone(), json))
             }
-        }
+            _ => None,
+        };
 
         let response = self
-            .request_with_auth_header(
-                self.http.post(endpoint.clone()).multipart(form),
-                auth_header,
+            .send_with_retries(
+                || {
+                    let part =
+                        reqwest::multipart::Part::bytes(bytes.clone()).file_name(file_name.clone());
+                    let mut form = reqwest::multipart::Form::new()
+                        .part(target.replay_upload.file_field.clone(), part);
+                    if let Some((field, json)) = &rank_field_json {
+                        form = form.text(field.clone(), json.clone());
+                    }
+                    self.request_with_auth_header(
+                        self.http.post(endpoint.clone()).multipart(form),
+                        auth_header.clone(),
+                    )
+                },
+                "replay upload",
+                &target.name,
             )
-            .send()
             .await
             .with_context(|| {
                 format!(
@@ -210,14 +275,18 @@ impl ReplayUploader {
             return Ok(());
         }
 
+        let endpoint = target.endpoint_url_without_query(path)?;
         let response = self
-            .request_with_auth_header(
-                self.http
-                    .post(target.endpoint_url_without_query(path)?)
-                    .json(payload),
-                auth_header,
+            .send_with_retries(
+                || {
+                    self.request_with_auth_header(
+                        self.http.post(endpoint.clone()).json(payload),
+                        auth_header.clone(),
+                    )
+                },
+                "MMR upload",
+                &target.name,
             )
-            .send()
             .await
             .with_context(|| format!("failed to upload MMR for {match_id} to {}", target.name))?;
 
@@ -225,8 +294,9 @@ impl ReplayUploader {
         let body = response.text().await.unwrap_or_default();
         if !status.is_success() {
             bail!(
-                "{} MMR upload for {match_id} failed with {status}: {body}",
-                target.name
+                "{} MMR upload for {match_id} failed with {status}: {}",
+                target.name,
+                response_body_excerpt_with_limit(&body, REASON_BODY_LIMIT)
             );
         }
         Ok(())
@@ -597,19 +667,12 @@ fn classify_upload_response_with_details(
                 response_body = %body_excerpt,
                 "replay upload returned unsuccessful status"
             );
+            // Full diagnostics live in the warn above; keep the error (which
+            // becomes the UI-facing failure reason) readable.
             bail!(
-                "{} upload failed with {status}; endpoint={}; match_id={}; replay_path={}; \
-                 filename={}; file_size_bytes={}; rank_players={}; response_headers={}; \
-                 response_body={}",
+                "{} upload failed with {status}: {}",
                 target.name,
-                details.endpoint,
-                details.match_id.unwrap_or("<unknown>"),
-                details.file_path.display(),
-                details.file_name,
-                details.file_size,
-                details.rank_player_count,
-                response_headers,
-                body_excerpt
+                response_body_excerpt_with_limit(body, REASON_BODY_LIMIT)
             )
         } else {
             bail!(
@@ -647,16 +710,20 @@ fn response_header_summary(headers: &HeaderMap) -> String {
 }
 
 fn response_body_excerpt(body: &str) -> String {
+    response_body_excerpt_with_limit(body, RESPONSE_BODY_LOG_LIMIT)
+}
+
+fn response_body_excerpt_with_limit(body: &str, limit: usize) -> String {
     let mut excerpt = body
         .chars()
-        .take(RESPONSE_BODY_LOG_LIMIT)
+        .take(limit)
         .map(|character| match character {
             '\n' | '\r' | '\t' => ' ',
             character if character.is_control() => ' ',
             character => character,
         })
         .collect::<String>();
-    if body.chars().count() > RESPONSE_BODY_LOG_LIMIT {
+    if body.chars().count() > limit {
         excerpt.push_str("... <truncated>");
     }
     if excerpt.is_empty() {
@@ -760,5 +827,42 @@ mod tests {
             result.location,
             Some("https://rocket-sense.duckdns.org/replays/replay-1".to_string())
         );
+    }
+
+    #[test]
+    fn upload_failure_reason_is_truncated_and_single_line() {
+        let target = UploadDestinationConfig::rocket_sense();
+        let html = format!("<html>\r\n<body>{}</body>\r\n</html>", "x".repeat(1000));
+        let endpoint = Url::parse("https://rocket-sense.duckdns.org/api/v1/replays").unwrap();
+        let file_path = Path::new("/tmp/match.replay");
+        let headers = HeaderMap::new();
+        let error = classify_upload_response_with_details(
+            &target,
+            StatusCode::BAD_GATEWAY,
+            None,
+            &html,
+            Some(UploadFailureDetails {
+                endpoint: &endpoint,
+                file_path,
+                file_name: "match.replay",
+                match_id: Some("MATCH-1"),
+                file_size: 1024,
+                rank_player_count: 6,
+                response_headers: &headers,
+            }),
+        )
+        .expect_err("non-success status should be an error");
+        let reason = error.to_string();
+
+        assert!(reason.contains("Rocket Sense upload failed with 502"));
+        assert!(reason.contains("<truncated>"));
+        // No raw newlines leak into the single-line reason.
+        assert!(!reason.contains('\n') && !reason.contains('\r'));
+        // The UI-facing reason omits the verbose diagnostics (endpoint, paths,
+        // headers) that go to the structured warn log instead.
+        assert!(!reason.contains("endpoint="));
+        assert!(!reason.contains("replay_path="));
+        // Bounded well under the full-body log limit.
+        assert!(reason.len() < REASON_BODY_LIMIT + 100);
     }
 }

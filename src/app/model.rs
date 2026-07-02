@@ -153,6 +153,10 @@ pub struct BackfillSummary {
     pub failed: usize,
     pub failed_match_ids: Vec<String>,
     pub failed_uploads: Vec<ReplayUploadRequest>,
+    /// Account-level failures (auth, PsyNet connection, presence check) that
+    /// prevented matches from being considered. Distinct from per-match upload
+    /// failures — these explain why a run may have done less than expected.
+    pub sync_errors: Vec<String>,
 }
 
 impl From<crate::sync::SyncSummary> for BackfillSummary {
@@ -172,6 +176,7 @@ impl From<crate::sync::SyncSummary> for BackfillSummary {
                     reason: Some(failed.reason),
                 })
                 .collect(),
+            sync_errors: summary.sync_errors,
         }
     }
 }

@@ -189,12 +189,15 @@ fn spawn_upload_queue(queue: UploadQueueSignals) {
 
         upload_queue_running.set(false);
         sync_run.set(sync_run().completed(now_label(), aggregate.clone()));
-        history_message.set(format_backfill_message(
-            format!(
-                "Upload queue complete: {} uploaded, {} duplicates, {} cached, {} failed",
-                aggregate.uploaded, aggregate.duplicates, aggregate.cached, aggregate.failed
+        history_message.set(append_sync_errors(
+            format_backfill_message(
+                format!(
+                    "Upload queue complete: {} uploaded, {} duplicates, {} cached, {} failed",
+                    aggregate.uploaded, aggregate.duplicates, aggregate.cached, aggregate.failed
+                ),
+                &aggregate.failed_uploads,
             ),
-            &aggregate.failed_uploads,
+            &aggregate.sync_errors,
         ));
     });
 }
@@ -475,15 +478,18 @@ fn App() -> Element {
                             failed_uploads.set(failures.clone());
                             persist_failed_uploads(&failures);
                             sync_run.set(sync_run().completed(now_label(), run_summary.clone()));
-                            history_message.set(format_backfill_message(
-                                format!(
-                                    "Sync complete: {} uploaded, {} duplicates, {} cached, {} failed",
-                                    run_summary.uploaded,
-                                    run_summary.duplicates,
-                                    run_summary.cached,
-                                    run_summary.failed
+                            history_message.set(append_sync_errors(
+                                format_backfill_message(
+                                    format!(
+                                        "Sync complete: {} uploaded, {} duplicates, {} cached, {} failed",
+                                        run_summary.uploaded,
+                                        run_summary.duplicates,
+                                        run_summary.cached,
+                                        run_summary.failed
+                                    ),
+                                    &run_summary.failed_uploads,
                                 ),
-                                &run_summary.failed_uploads,
+                                &run_summary.sync_errors,
                             ));
                             history_refresh_tick.set(history_refresh_tick().wrapping_add(1));
                         }

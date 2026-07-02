@@ -1,13 +1,13 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use rlru::app::{
-    add_account, backfill_upload_destinations, begin_account_auth, dedupe_upload_requests,
-    failed_upload, finish_account_auth, format_backfill_message, is_same_upload,
-    is_same_upload_request, load_history, load_persisted_failed_uploads, load_summary, now_label,
-    remove_account, save_auto_upload, save_overview_config, save_persisted_failed_uploads,
-    short_match_id, upload_failure_reason, upload_history_replay, upsert_failed_upload,
-    AccountAuthPrompt, AccountFormData, AppSummary, BackfillSummary, HistoryRow,
-    HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest, SyncRunState,
-    MAX_CONCURRENT_UPLOADS,
+    add_account, append_sync_errors, backfill_upload_destinations, begin_account_auth,
+    dedupe_upload_requests, failed_upload, finish_account_auth, format_backfill_message,
+    is_same_upload, is_same_upload_request, load_history, load_persisted_failed_uploads,
+    load_summary, now_label, remove_account, save_auto_upload, save_overview_config,
+    save_persisted_failed_uploads, short_match_id, upload_failure_reason, upload_history_replay,
+    upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary, BackfillSummary,
+    HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
+    SyncRunState, MAX_CONCURRENT_UPLOADS,
 };
 #[cfg(all(
     not(target_arch = "wasm32"),
@@ -327,6 +327,11 @@ pub(crate) fn merge_backfill_summary(summary: &mut BackfillSummary, next: Backfi
     for failed_upload in next.failed_uploads {
         upsert_failed_upload(&mut summary.failed_uploads, failed_upload);
     }
+    for sync_error in next.sync_errors {
+        if !summary.sync_errors.contains(&sync_error) {
+            summary.sync_errors.push(sync_error);
+        }
+    }
 }
 
 pub(crate) fn failed_upload_summary(
@@ -344,6 +349,7 @@ pub(crate) fn failed_upload_summary(
             match_id: request.match_id.clone(),
             reason: Some(reason),
         }],
+        sync_errors: Vec::new(),
     }
 }
 
@@ -649,6 +655,7 @@ pub(crate) struct BackfillSummary {
     pub(crate) failed: usize,
     pub(crate) failed_match_ids: Vec<String>,
     pub(crate) failed_uploads: Vec<ReplayUploadRequest>,
+    pub(crate) sync_errors: Vec<String>,
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -677,6 +684,23 @@ pub(crate) fn format_backfill_message(
             format_failed_upload(&failed_uploads[0])
         )
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn append_sync_errors(message: String, sync_errors: &[String]) -> String {
+    if sync_errors.is_empty() {
+        return message;
+    }
+    let detail = if sync_errors.len() == 1 {
+        format!("account issue: {}", sync_errors[0])
+    } else {
+        format!(
+            "{} account issues; first: {}",
+            sync_errors.len(),
+            sync_errors[0]
+        )
+    };
+    format!("{message}; {detail}")
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -809,11 +833,8 @@ pub(crate) async fn load_history() -> Result<Vec<HistoryRow>, String> {
 pub(crate) async fn backfill_upload_destinations() -> Result<BackfillSummary, String> {
     Ok(BackfillSummary {
         uploaded: 1,
-        duplicates: 0,
         cached: 1,
-        failed: 0,
-        failed_match_ids: Vec::new(),
-        failed_uploads: Vec::new(),
+        ..BackfillSummary::default()
     })
 }
 
@@ -823,11 +844,7 @@ pub(crate) async fn upload_history_replay(
 ) -> Result<BackfillSummary, String> {
     Ok(BackfillSummary {
         uploaded: 1,
-        duplicates: 0,
-        cached: 0,
-        failed: 0,
-        failed_match_ids: Vec::new(),
-        failed_uploads: Vec::new(),
+        ..BackfillSummary::default()
     })
 }
 
@@ -838,11 +855,7 @@ pub(crate) async fn upload_history_replays(
     let uploaded = requests.len();
     Ok(BackfillSummary {
         uploaded,
-        duplicates: 0,
-        cached: 0,
-        failed: 0,
-        failed_match_ids: Vec::new(),
-        failed_uploads: Vec::new(),
+        ..BackfillSummary::default()
     })
 }
 
