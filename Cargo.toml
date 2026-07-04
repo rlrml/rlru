@@ -1,6 +1,6 @@
 [package]
 name = "rlru"
-version = "0.1.30"
+version = "0.1.31"
 edition = "2021"
 description = "Rocket League replay uploader"
 license = "MIT OR Apache-2.0"
@@ -37,7 +37,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"], optional = true }
 dirs = "6"
 humantime-serde = "1"
-psynet = { path = "crates/psynet", version = "0.1.30" }
+psynet = { path = "crates/psynet", version = "0.1.31" }
 secrecy = { version = "0.10", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
