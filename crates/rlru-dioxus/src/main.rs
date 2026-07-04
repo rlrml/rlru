@@ -1,3 +1,11 @@
+// Release builds on Windows are a GUI app; opt out of the console subsystem so
+// launching the executable does not pop a terminal window behind it. Debug
+// builds keep the console so tracing/eprintln output stays visible.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use dioxus::dioxus_core::Task;
 use dioxus::prelude::*;
 #[cfg(not(target_arch = "wasm32"))]
