@@ -98,13 +98,10 @@ version number.
 **Fully automatic (recommended):** bump the `version` in `Cargo.toml`,
 `crates/psynet/Cargo.toml`, and `crates/rlru-dioxus/Cargo.toml` and merge to
 `main`. The [`auto-tag-release`](.github/workflows/auto-tag-release.yml) workflow
-notices the new version and pushes the matching `vX.Y.Z` tag for you, which kicks
-off the release pipeline.
-
-> For the auto-created tag to trigger the downstream publish jobs, add a
-> Personal Access Token (with `contents: write`) as the `RELEASE_PAT` repository
-> secret — a tag pushed with the default `GITHUB_TOKEN` will not start new
-> workflow runs. Without it, the tag is still created; just re-push it manually.
+notices the new version, pushes the matching `vX.Y.Z` tag, and dispatches the
+release pipeline against it. No extra secrets are required: a tag pushed with the
+default `GITHUB_TOKEN` will not start new runs, so the workflow triggers the
+pipeline via `workflow_dispatch` instead (which is exempt from that guard).
 
 **Manual:** cut the tag yourself from a clean `main` checkout:
 
