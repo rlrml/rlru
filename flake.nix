@@ -238,6 +238,14 @@
         mkWindowsPackage = {
           pname,
           cargoPackage ? "rlru",
+          # rlru-dioxus defaults to the wasm `web` feature, so the desktop build
+          # must opt out and select `desktop` explicitly.
+          buildNoDefaultFeatures ? false,
+          buildFeatures ? [],
+          # The Dioxus desktop app loads WebView2 at runtime; ship the loader DLL
+          # that webview2-com-sys stages into the build output next to the exe.
+          bundleWebview2 ? false,
+          description ? "Rocket League replay uploader for Windows",
         }:
           rustPlatform.buildRustPackage {
             inherit pname;
@@ -260,7 +268,7 @@
             buildPhase = ''
               runHook preBuild
 
-              cargo build --frozen --offline --release -p ${cargoPackage} --target ${windowsTarget}
+              cargo build --frozen --offline --release -p ${cargoPackage} ${lib.optionalString buildNoDefaultFeatures "--no-default-features"} ${lib.optionalString (buildFeatures != []) "--features ${lib.concatStringsSep "," buildFeatures}"} --target ${windowsTarget}
 
               runHook postBuild
             '';
@@ -269,10 +277,19 @@
 
               install -Dm755 "target/${windowsTarget}/release/${pname}.exe" "$out/bin/${pname}.exe"
 
+              ${lib.optionalString bundleWebview2 ''
+                loader="$(find "target/${windowsTarget}/release/build" -path '*/out/x64/WebView2Loader.dll' -print -quit)"
+                if [[ -z "$loader" ]]; then
+                  echo "WebView2Loader.dll not found in ${windowsTarget} build output" >&2
+                  exit 1
+                fi
+                install -Dm755 "$loader" "$out/bin/WebView2Loader.dll"
+              ''}
+
               runHook postInstall
             '';
             meta = {
-              description = "Rocket League replay uploader for Windows";
+              inherit description;
               homepage = "https://github.com/rlrml/rlru";
               license = with lib.licenses; [mit asl20];
               mainProgram = "${pname}.exe";
@@ -492,6 +509,14 @@
             rlru = mkRlruPackage {pname = "rlru";};
             rlru-linux-static = rlruLinuxStaticCli;
             rlru-windows = mkWindowsPackage {pname = "rlru";};
+            rlru-dioxus-windows = mkWindowsPackage {
+              pname = "rlru-dioxus";
+              cargoPackage = "rlru-dioxus";
+              buildNoDefaultFeatures = true;
+              buildFeatures = ["desktop"];
+              bundleWebview2 = true;
+              description = "rlru Dioxus desktop client for Windows";
+            };
             rlru-dioxus-desktop = mkRlruPackage {
               pname = "rlru-dioxus";
               cargoPackage = "rlru-dioxus";
@@ -571,6 +596,18 @@
                 package="rlru-cli-windows-x86_64"
                   mkdir -p "$TMPDIR/$package"
                   cp "${self.packages.${system}.rlru-windows}/bin/rlru.exe" "$TMPDIR/$package/"
+                  (cd "$TMPDIR" && zip -r "$out" "$package")
+              '';
+            dist-dioxus-windows-x86_64 =
+              pkgs.runCommand "rlru-dioxus-windows-x86_64.zip" {
+                nativeBuildInputs = [
+                  pkgs.zip
+                ];
+              } ''
+                package="rlru-dioxus-windows-x86_64"
+                  mkdir -p "$TMPDIR/$package"
+                  cp "${self.packages.${system}.rlru-dioxus-windows}/bin/rlru-dioxus.exe" "$TMPDIR/$package/"
+                  cp "${self.packages.${system}.rlru-dioxus-windows}/bin/WebView2Loader.dll" "$TMPDIR/$package/"
                   (cd "$TMPDIR" && zip -r "$out" "$package")
               '';
           }
