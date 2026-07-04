@@ -9,11 +9,7 @@ pub(crate) use rlru::app::{
     HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
     SyncRunState,
 };
-#[cfg(all(
-    not(target_arch = "wasm32"),
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) use rlru::app::{
     auto_upload_label, format_failed_upload_retry_label, tray_sync_label, tray_tooltip,
 };

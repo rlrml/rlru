@@ -1,18 +1,12 @@
 use dioxus::prelude::*;
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 use crate::desktop::{
     cleanup_desktop_instance_socket, restore_desktop_window_handle, APP_ICON_PNG, APP_ID,
 };
 use crate::model::*;
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 #[derive(Clone, Debug)]
 enum TrayCommand {
     ShowWindow,
@@ -23,37 +17,25 @@ enum TrayCommand {
     Quit,
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 struct TrayState {
     sender: std::sync::mpsc::Sender<TrayThreadMessage>,
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 impl Drop for TrayState {
     fn drop(&mut self) {
         let _ = self.sender.send(TrayThreadMessage::Shutdown);
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 enum TrayThreadMessage {
     Update(Box<TrayUpdate>),
     Shutdown,
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 struct TrayUpdate {
     summary: AppSummary,
     history: Option<Result<Vec<HistoryRow>, String>>,
@@ -61,10 +43,7 @@ struct TrayUpdate {
     failed_uploads: Vec<ReplayUploadRequest>,
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 #[component]
 pub(crate) fn DesktopTrayBridge(
     summary: AppSummary,
@@ -141,10 +120,7 @@ pub(crate) fn DesktopTrayBridge(
     rsx! {}
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn create_tray_state(sender: UnboundedSender<TrayCommand>) -> Option<TrayState> {
     match create_tray_state_inner(sender) {
         Ok(state) => Some(state),
@@ -155,10 +131,7 @@ fn create_tray_state(sender: UnboundedSender<TrayCommand>) -> Option<TrayState> 
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn create_tray_state_inner(sender: UnboundedSender<TrayCommand>) -> Result<TrayState, String> {
     use ksni::blocking::TrayMethods;
 
@@ -190,10 +163,7 @@ fn create_tray_state_inner(sender: UnboundedSender<TrayCommand>) -> Result<TrayS
     })
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn run_tray_thread(
     handle: ksni::blocking::Handle<RlruTrayItem>,
     receiver: std::sync::mpsc::Receiver<TrayThreadMessage>,
@@ -216,10 +186,7 @@ fn run_tray_thread(
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn update_tray_state(
     state: &TrayState,
     summary: AppSummary,
@@ -237,10 +204,7 @@ fn update_tray_state(
         })));
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn disabled_item<T>(label: impl Into<String>) -> ksni::menu::MenuItem<T> {
     ksni::menu::StandardItem {
         label: label.into(),
@@ -250,10 +214,7 @@ fn disabled_item<T>(label: impl Into<String>) -> ksni::menu::MenuItem<T> {
     .into()
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn action_item(
     label: &str,
     command: TrayCommand,
@@ -272,10 +233,7 @@ fn action_item(
     .into()
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn submenu(
     label: impl Into<String>,
     items: Vec<ksni::menu::MenuItem<RlruTrayItem>>,
@@ -288,10 +246,7 @@ fn submenu(
     .into()
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn history_menu_items(
     history: Option<&Result<Vec<HistoryRow>, String>>,
     failed_uploads: &[ReplayUploadRequest],
@@ -333,10 +288,7 @@ fn history_menu_items(
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn png_to_argb32(png_data: &[u8]) -> ksni::Icon {
     let image = image::load_from_memory_with_format(png_data, image::ImageFormat::Png)
         .expect("embedded PNG is valid")
@@ -352,18 +304,12 @@ fn png_to_argb32(png_data: &[u8]) -> ksni::Icon {
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn load_icon_set() -> Vec<ksni::Icon> {
     vec![png_to_argb32(APP_ICON_PNG)]
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 struct RlruTrayItem {
     summary: Option<AppSummary>,
     history: Option<Result<Vec<HistoryRow>, String>>,
@@ -373,10 +319,7 @@ struct RlruTrayItem {
     icons: Vec<ksni::Icon>,
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 impl RlruTrayItem {
     fn new(sender: UnboundedSender<TrayCommand>) -> Self {
         Self {
@@ -390,10 +333,7 @@ impl RlruTrayItem {
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 impl ksni::Tray for RlruTrayItem {
     const MENU_ON_ACTIVATE: bool = false;
 
@@ -502,11 +442,7 @@ impl ksni::Tray for RlruTrayItem {
     }
 }
 
-#[cfg(all(
-    test,
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(test, feature = "desktop", target_os = "linux"))]
 mod tests {
     use super::*;
 
@@ -518,10 +454,7 @@ mod tests {
     }
 }
 
-#[cfg(not(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-)))]
+#[cfg(not(all(feature = "desktop", target_os = "linux")))]
 #[component]
 pub(crate) fn DesktopTrayBridge(
     summary: AppSummary,
@@ -544,20 +477,14 @@ pub(crate) fn DesktopTrayBridge(
     rsx! {}
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn show_window(mut window_hidden_to_tray: Signal<bool>) {
     let win = dioxus::desktop::window();
     restore_desktop_window_handle(win.window.clone());
     window_hidden_to_tray.set(false);
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn toggle_window_visibility(mut window_hidden_to_tray: Signal<bool>) {
     let win = dioxus::desktop::window();
     if !window_hidden_to_tray() && win.window.is_visible() {
@@ -569,10 +496,7 @@ fn toggle_window_visibility(mut window_hidden_to_tray: Signal<bool>) {
     }
 }
 
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "ios", target_os = "android"))
-))]
+#[cfg(all(feature = "desktop", target_os = "linux"))]
 fn quit_application(mut tray_state: Signal<Option<TrayState>>) {
     use dioxus::desktop::WindowCloseBehaviour;
 

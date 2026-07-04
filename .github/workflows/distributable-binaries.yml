@@ -106,6 +106,38 @@ jobs:
           path: dist/rlru-cli-windows-x86_64.zip
           if-no-files-found: error
 
+  windows-dioxus:
+    name: Windows Desktop x86_64
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Build Windows desktop archive
+        run: |
+          nix build .#dist-dioxus-windows-x86_64 --out-link result-windows-dioxus
+
+      - name: Stage Windows desktop artifact
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+          cp -L result-windows-dioxus dist/rlru-dioxus-windows-x86_64.zip
+
+      - name: Upload Windows desktop artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rlru-dioxus-windows-x86_64
+          path: dist/rlru-dioxus-windows-x86_64.zip
+          if-no-files-found: error
+
   linux-appimage:
     name: Linux Desktop AppImage x86_64
     runs-on: ubuntu-latest
@@ -359,6 +391,7 @@ jobs:
       - checks
       - linux
       - windows
+      - windows-dioxus
       - linux-appimage
       - android
     if: startsWith(github.ref, 'refs/tags/v')

@@ -13,11 +13,6 @@ path = "src/main.rs"
 [dependencies]
 dioxus = { version = "=0.7.9", default-features = false, features = ["launch", "lib"] }
 futures-util = "0.3"
-gdk = { version = "0.18", optional = true }
-glib = { version = "0.18", optional = true }
-gtk = { version = "0.18", optional = true }
-image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
-ksni = { version = "0.3", optional = true, features = ["blocking"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -26,6 +21,9 @@ web-sys = { version = "0.3", features = ["Location", "Window"] }
 [features]
 default = ["web"]
 web = ["dioxus/web"]
+# The GTK/tray dependencies are Linux-only (see the target table below); the
+# `dep:` references are silently ignored when building `desktop` for Windows or
+# macOS, where Dioxus desktop uses WebView2 / WKWebView instead of GTK.
 desktop = ["dioxus/desktop", "dep:gdk", "dep:glib", "dep:gtk", "dep:image", "dep:ksni"]
 mobile = ["dioxus/mobile"]
 android = ["mobile"]
@@ -33,3 +31,13 @@ android = ["mobile"]
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 chrono = { version = "0.4", features = ["clock"] }
 rlru = { path = "../..", default-features = false }
+
+# GTK desktop integration and the ksni system tray only build on Linux. Keeping
+# them out of the shared dependency table lets the `desktop` feature cross-compile
+# to Windows (WebView2) and macOS (WKWebView) without dragging in GTK/glib/pango.
+[target.'cfg(target_os = "linux")'.dependencies]
+gdk = { version = "0.18", optional = true }
+glib = { version = "0.18", optional = true }
+gtk = { version = "0.18", optional = true }
+image = { version = "0.25", optional = true, default-features = false, features = ["png"] }
+ksni = { version = "0.3", optional = true, features = ["blocking"] }

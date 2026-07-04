@@ -117,6 +117,7 @@ Either way, the tagged run:
 - uploads downloadable assets to the GitHub Releases page:
   - `rlru-cli-linux-x86_64.tar.gz`
   - `rlru-cli-windows-x86_64.zip`
+  - `rlru-dioxus-windows-x86_64.zip` (desktop app + `WebView2Loader.dll`)
   - `rlru-dioxus-linux-x86_64.AppImage`
   - `rlru-dioxus-android-*.apk` / `rlru-dioxus-android-*.aab`
 - publishes `psynet` then `rlru` to crates.io, when the `CARGO_REGISTRY_TOKEN`
