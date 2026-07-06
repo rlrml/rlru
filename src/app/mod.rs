@@ -10,8 +10,13 @@ pub use model::*;
 
 use format::{auth_label, format_record_start_timestamp, platform_label};
 
+use url::Url;
+
 use crate::auth::AuthManager;
-use crate::config::{AccountConfig, BehaviorConfig, PlayerPlatform, WindowDecorationsConfig};
+use crate::config::{
+    AccountConfig, BehaviorConfig, PingConfig, PlayerPlatform, RankUploadConfig,
+    ReplayUploadConfig, TargetAuth, UploadDestinationConfig, WindowDecorationsConfig,
+};
 use crate::paths::AppPaths;
 use crate::state_file::write_atomically;
 use crate::sync::{SyncOptions, SyncService};
@@ -466,6 +471,327 @@ pub fn remove_account(account_id: u32) -> Result<AppSummary, String> {
     })
 }
 
+pub fn add_upload_destination(input: UploadDestinationFormData) -> Result<AppSummary, String> {
+    let destination = parse_upload_destination(&input)?;
+    update_config(|config| add_destination_to_config(config, destination.clone()))
+}
+
+pub fn update_upload_destination(
+    original_name: &str,
+    input: UploadDestinationFormData,
+) -> Result<AppSummary, String> {
+    let destination = parse_upload_destination(&input)?;
+    update_config(|config| update_destination_in_config(config, original_name, destination.clone()))
+}
+
+pub fn remove_upload_destination(name: &str) -> Result<AppSummary, String> {
+    update_config(|config| remove_destination_from_config(config, name))
+}
+
+/// Loads the configured destination `name` as editable form data.
+pub fn upload_destination_form(name: &str) -> Result<UploadDestinationFormData, String> {
+    let context = AppContext::load(false)?;
+    let destination = context
+        .config
+        .upload_destination(name)
+        .ok_or_else(|| format!("Upload destination {name:?} no longer exists"))?;
+    Ok(upload_destination_form_data(destination))
+}
+
+/// Form data prefilled from one of the built-in destination presets
+/// (`rocket_sense`, `ballchasing`, `rocky`) or generic defaults (`custom`).
+pub fn upload_destination_preset_form(preset: &str) -> Result<UploadDestinationFormData, String> {
+    match preset {
+        "rocket_sense" => {
+            let mut form = upload_destination_form_data(&UploadDestinationConfig::rocket_sense());
+            // The built-in constructor reads the token from ROCKET_SENSE_TOKEN,
+            // but the common UI path is pasting a literal API token.
+            form.auth_kind = "bearer".to_string();
+            form.auth_value = String::new();
+            Ok(form)
+        }
+        "ballchasing" => {
+            let mut form = upload_destination_form_data(&UploadDestinationConfig::ballchasing());
+            // Ballchasing authenticates with a raw Authorization header token.
+            form.auth_kind = "authorization_header".to_string();
+            form.auth_value = String::new();
+            Ok(form)
+        }
+        "rocky" => Ok(upload_destination_form_data(
+            &UploadDestinationConfig::rocky(),
+        )),
+        "custom" => {
+            let mut form = upload_destination_form_data(&UploadDestinationConfig::new(
+                String::new(),
+                Url::parse("https://example.com/api").expect("valid placeholder URL"),
+                BTreeMap::new(),
+                TargetAuth::None,
+                PingConfig::default(),
+                ReplayUploadConfig::default(),
+                RankUploadConfig::None,
+            ));
+            form.url = String::new();
+            Ok(form)
+        }
+        other => Err(format!("Unsupported upload destination preset {other:?}")),
+    }
+}
+
+fn upload_destination_form_data(
+    destination: &UploadDestinationConfig,
+) -> UploadDestinationFormData {
+    let (auth_kind, auth_value) = match &destination.auth {
+        TargetAuth::None => ("none", String::new()),
+        TargetAuth::AuthorizationHeader { value } => ("authorization_header", value.clone()),
+        TargetAuth::Bearer { token } => ("bearer", token.clone()),
+        TargetAuth::BearerEnv { variable } => ("bearer_env", variable.clone()),
+        TargetAuth::BearerCommand { command } => ("bearer_command", command.join(" ")),
+    };
+    let (rank_upload_mode, rank_upload_value) = match &destination.rank_upload {
+        RankUploadConfig::None => ("none", String::new()),
+        RankUploadConfig::Endpoint { path } => ("endpoint", path.clone()),
+        RankUploadConfig::Bundled { field } => ("bundled", field.clone()),
+    };
+
+    UploadDestinationFormData {
+        name: destination.name.clone(),
+        url: destination.url.to_string(),
+        auth_kind: auth_kind.to_string(),
+        auth_value,
+        query: destination
+            .query
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>()
+            .join(", "),
+        ping_enabled: destination.ping.enabled,
+        ping_path: destination.ping.path.clone(),
+        upload_enabled: destination.replay_upload.enabled,
+        upload_path: destination.replay_upload.path.clone(),
+        upload_file_field: destination.replay_upload.file_field.clone(),
+        success_statuses: format_status_list(&destination.replay_upload.success_statuses),
+        duplicate_statuses: format_status_list(&destination.replay_upload.duplicate_statuses),
+        rank_upload_mode: rank_upload_mode.to_string(),
+        rank_upload_value,
+    }
+}
+
+fn parse_upload_destination(
+    input: &UploadDestinationFormData,
+) -> Result<UploadDestinationConfig, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Destination name is required".to_string());
+    }
+    let url = Url::parse(input.url.trim())
+        .map_err(|error| format!("Destination URL is invalid: {error}"))?;
+
+    let destination = UploadDestinationConfig::new(
+        name.to_string(),
+        url,
+        parse_query_pairs(&input.query)?,
+        parse_target_auth(&input.auth_kind, &input.auth_value)?,
+        PingConfig {
+            enabled: input.ping_enabled,
+            path: input.ping_path.trim().to_string(),
+        },
+        ReplayUploadConfig {
+            enabled: input.upload_enabled,
+            path: input.upload_path.trim().to_string(),
+            file_field: input.upload_file_field.trim().to_string(),
+            success_statuses: parse_status_list("Success statuses", &input.success_statuses)?,
+            duplicate_statuses: parse_status_list("Duplicate statuses", &input.duplicate_statuses)?,
+        },
+        parse_rank_upload(&input.rank_upload_mode, &input.rank_upload_value)?,
+    );
+    destination.validate().map_err(|error| error.to_string())?;
+    Ok(destination)
+}
+
+fn parse_target_auth(kind: &str, value: &str) -> Result<TargetAuth, String> {
+    let value = value.trim();
+    match kind {
+        "none" => Ok(TargetAuth::None),
+        "bearer" => {
+            if value.is_empty() {
+                return Err("API token is required for bearer token auth".to_string());
+            }
+            Ok(TargetAuth::Bearer {
+                token: value.to_string(),
+            })
+        }
+        "bearer_env" => {
+            if value.is_empty() {
+                return Err("Environment variable name is required for bearer env auth".to_string());
+            }
+            Ok(TargetAuth::BearerEnv {
+                variable: value.to_string(),
+            })
+        }
+        "authorization_header" => {
+            if value.is_empty() {
+                return Err("Header value is required for authorization header auth".to_string());
+            }
+            Ok(TargetAuth::AuthorizationHeader {
+                value: value.to_string(),
+            })
+        }
+        "bearer_command" => {
+            let command: Vec<String> = value.split_whitespace().map(str::to_string).collect();
+            if command.is_empty() {
+                return Err("Command is required for bearer command auth".to_string());
+            }
+            Ok(TargetAuth::BearerCommand { command })
+        }
+        other => Err(format!("Unsupported auth kind {other:?}")),
+    }
+}
+
+fn parse_rank_upload(mode: &str, value: &str) -> Result<RankUploadConfig, String> {
+    let value = value.trim();
+    match mode {
+        "none" => Ok(RankUploadConfig::None),
+        "endpoint" => {
+            if value.is_empty() {
+                return Err("Endpoint path is required for rank endpoint uploads".to_string());
+            }
+            Ok(RankUploadConfig::Endpoint {
+                path: value.to_string(),
+            })
+        }
+        "bundled" => {
+            if value.is_empty() {
+                return Err("Multipart field is required for bundled rank uploads".to_string());
+            }
+            Ok(RankUploadConfig::Bundled {
+                field: value.to_string(),
+            })
+        }
+        other => Err(format!("Unsupported rank upload mode {other:?}")),
+    }
+}
+
+fn parse_query_pairs(value: &str) -> Result<BTreeMap<String, String>, String> {
+    let mut pairs = BTreeMap::new();
+    for entry in value.split([',', '\n']) {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((key, pair_value)) = entry.split_once('=') else {
+            return Err(format!("Query parameter {entry:?} must be key=value"));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(format!("Query parameter {entry:?} is missing a key"));
+        }
+        pairs.insert(key.to_string(), pair_value.trim().to_string());
+    }
+    Ok(pairs)
+}
+
+fn parse_status_list(label: &str, value: &str) -> Result<Vec<u16>, String> {
+    let mut statuses = Vec::new();
+    for entry in value.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let status = entry.parse::<u16>().map_err(|_| {
+            format!("{label} must be comma-separated HTTP status codes, got {entry:?}")
+        })?;
+        statuses.push(status);
+    }
+    if statuses.is_empty() {
+        return Err(format!(
+            "{label} must include at least one HTTP status code"
+        ));
+    }
+    Ok(statuses)
+}
+
+fn format_status_list(statuses: &[u16]) -> String {
+    statuses
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn add_destination_to_config(
+    config: &mut Config,
+    destination: UploadDestinationConfig,
+) -> Result<(), String> {
+    if config
+        .upload_destinations
+        .iter()
+        .any(|target| target.name == destination.name)
+    {
+        return Err(format!(
+            "Upload destination {:?} already exists",
+            destination.name
+        ));
+    }
+    config.upload_destinations.push(destination);
+    Ok(())
+}
+
+fn update_destination_in_config(
+    config: &mut Config,
+    original_name: &str,
+    destination: UploadDestinationConfig,
+) -> Result<(), String> {
+    let Some(index) = config
+        .upload_destinations
+        .iter()
+        .position(|target| target.name == original_name)
+    else {
+        return Err(format!(
+            "Upload destination {original_name:?} no longer exists"
+        ));
+    };
+
+    let collides = config
+        .upload_destinations
+        .iter()
+        .enumerate()
+        .any(|(other, target)| other != index && target.name == destination.name);
+    if collides {
+        return Err(format!(
+            "Upload destination {:?} already exists",
+            destination.name
+        ));
+    }
+
+    // Keep the behavior selection pointing at the same destination across a
+    // rename.
+    if config.behavior.selected_upload_destination.as_deref() == Some(original_name) {
+        config.behavior.selected_upload_destination = Some(destination.name.clone());
+    }
+    config.upload_destinations[index] = destination;
+    Ok(())
+}
+
+fn remove_destination_from_config(config: &mut Config, name: &str) -> Result<(), String> {
+    if config.upload_destinations.len() <= 1 {
+        return Err("Config must keep at least one upload destination".to_string());
+    }
+
+    let Some(index) = config
+        .upload_destinations
+        .iter()
+        .position(|target| target.name == name)
+    else {
+        return Err(format!("Upload destination {name:?} no longer exists"));
+    };
+
+    config.upload_destinations.remove(index);
+    if config.behavior.selected_upload_destination.as_deref() == Some(name) {
+        config.behavior.selected_upload_destination = None;
+    }
+    Ok(())
+}
+
 pub fn save_auto_upload(enabled: bool) -> Result<AppSummary, String> {
     update_behavior(|behavior| behavior.auto_upload = enabled)
 }
@@ -550,6 +876,241 @@ fn parse_minutes(label: &str, value: &str, minimum: Option<u64>) -> Result<u64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_destination(name: &str) -> UploadDestinationConfig {
+        let mut form = upload_destination_preset_form("custom").unwrap();
+        form.name = name.to_string();
+        form.url = "https://example.com/api".to_string();
+        parse_upload_destination(&form).unwrap()
+    }
+
+    #[test]
+    fn add_destination_rejects_duplicate_names() {
+        let mut config = Config::default();
+
+        let error =
+            add_destination_to_config(&mut config, sample_destination("Rocky")).unwrap_err();
+        assert!(error.contains("already exists"), "{error}");
+
+        add_destination_to_config(&mut config, sample_destination("Mine")).unwrap();
+        config.validate().unwrap();
+        assert!(config.upload_destination("Mine").is_some());
+    }
+
+    #[test]
+    fn update_destination_rename_repoints_selected_destination() {
+        let mut config = Config::default();
+        config.behavior.selected_upload_destination = Some("Rocky".to_string());
+
+        update_destination_in_config(&mut config, "Rocky", sample_destination("Rocky II")).unwrap();
+
+        assert_eq!(
+            config.behavior.selected_upload_destination.as_deref(),
+            Some("Rocky II")
+        );
+        assert!(config.upload_destination("Rocky").is_none());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn update_destination_rename_keeps_unrelated_selection() {
+        let mut config = Config::default();
+        config.behavior.selected_upload_destination = Some("Ballchasing".to_string());
+
+        update_destination_in_config(&mut config, "Rocky", sample_destination("Rocky II")).unwrap();
+
+        assert_eq!(
+            config.behavior.selected_upload_destination.as_deref(),
+            Some("Ballchasing")
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn update_destination_rejects_collision_with_other_destination() {
+        let mut config = Config::default();
+
+        let error =
+            update_destination_in_config(&mut config, "Rocky", sample_destination("Ballchasing"))
+                .unwrap_err();
+
+        assert!(error.contains("already exists"), "{error}");
+    }
+
+    #[test]
+    fn update_destination_requires_existing_destination() {
+        let mut config = Config::default();
+
+        let error =
+            update_destination_in_config(&mut config, "Missing", sample_destination("Renamed"))
+                .unwrap_err();
+
+        assert!(error.contains("no longer exists"), "{error}");
+    }
+
+    #[test]
+    fn remove_destination_clears_selected_destination() {
+        let mut config = Config::default();
+        config.behavior.selected_upload_destination = Some("Rocky".to_string());
+
+        remove_destination_from_config(&mut config, "Rocky").unwrap();
+
+        assert_eq!(config.behavior.selected_upload_destination, None);
+        assert!(config.upload_destination("Rocky").is_none());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn remove_destination_keeps_unrelated_selection() {
+        let mut config = Config::default();
+        config.behavior.selected_upload_destination = Some("Ballchasing".to_string());
+
+        remove_destination_from_config(&mut config, "Rocky").unwrap();
+
+        assert_eq!(
+            config.behavior.selected_upload_destination.as_deref(),
+            Some("Ballchasing")
+        );
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn remove_destination_keeps_at_least_one() {
+        let mut config = Config::default();
+        config.upload_destinations = vec![crate::config::UploadDestinationConfig::rocky()];
+
+        let error = remove_destination_from_config(&mut config, "Rocky").unwrap_err();
+
+        assert!(error.contains("at least one"), "{error}");
+    }
+
+    #[test]
+    fn parse_upload_destination_round_trips_built_in_presets() {
+        for destination in [
+            UploadDestinationConfig::rocky(),
+            UploadDestinationConfig::ballchasing(),
+            UploadDestinationConfig::rocket_sense(),
+        ] {
+            let form = upload_destination_form_data(&destination);
+            assert_eq!(parse_upload_destination(&form).unwrap(), destination);
+        }
+    }
+
+    #[test]
+    fn rocket_sense_preset_defaults_to_pasted_bearer_token() {
+        let form = upload_destination_preset_form("rocket_sense").unwrap();
+        assert_eq!(form.name, "Rocket Sense");
+        assert_eq!(form.url, "https://rocket-sense.duckdns.org/api/v1");
+        assert_eq!(form.auth_kind, "bearer");
+        assert_eq!(form.auth_value, "");
+        assert_eq!(form.upload_path, "/replays");
+        assert_eq!(form.rank_upload_mode, "bundled");
+
+        // The token itself is the one thing the user must supply.
+        let error = parse_upload_destination(&form).unwrap_err();
+        assert!(error.contains("token"), "{error}");
+
+        let mut with_token = form;
+        with_token.auth_value = "secret".to_string();
+        let parsed = parse_upload_destination(&with_token).unwrap();
+        assert_eq!(
+            parsed.auth,
+            TargetAuth::Bearer {
+                token: "secret".to_string()
+            }
+        );
+        assert_eq!(parsed.replay_upload.duplicate_statuses, vec![200, 409]);
+    }
+
+    #[test]
+    fn parse_upload_destination_parses_text_fields() {
+        let mut form = upload_destination_preset_form("custom").unwrap();
+        form.name = "Custom".to_string();
+        form.url = "https://example.com/api".to_string();
+        form.query = "visibility=public, group=team".to_string();
+        form.auth_kind = "bearer_command".to_string();
+        form.auth_value = "pass show rocket".to_string();
+        form.success_statuses = "200, 201".to_string();
+        form.duplicate_statuses = "409".to_string();
+        form.rank_upload_mode = "endpoint".to_string();
+        form.rank_upload_value = "/v1/mmr".to_string();
+
+        let parsed = parse_upload_destination(&form).unwrap();
+
+        assert_eq!(
+            parsed.query,
+            BTreeMap::from([
+                ("visibility".to_string(), "public".to_string()),
+                ("group".to_string(), "team".to_string()),
+            ])
+        );
+        assert_eq!(
+            parsed.auth,
+            TargetAuth::BearerCommand {
+                command: vec!["pass".to_string(), "show".to_string(), "rocket".to_string()]
+            }
+        );
+        assert_eq!(parsed.replay_upload.success_statuses, vec![200, 201]);
+        assert_eq!(
+            parsed.rank_upload,
+            RankUploadConfig::Endpoint {
+                path: "/v1/mmr".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn parse_upload_destination_rejects_invalid_input() {
+        let valid = {
+            let mut form = upload_destination_preset_form("custom").unwrap();
+            form.name = "Custom".to_string();
+            form.url = "https://example.com/api".to_string();
+            form
+        };
+        parse_upload_destination(&valid).unwrap();
+
+        let mut empty_name = valid.clone();
+        empty_name.name = "  ".to_string();
+        assert!(parse_upload_destination(&empty_name)
+            .unwrap_err()
+            .contains("name is required"));
+
+        let mut bad_scheme = valid.clone();
+        bad_scheme.url = "ftp://example.com".to_string();
+        assert!(parse_upload_destination(&bad_scheme)
+            .unwrap_err()
+            .contains("http or https"));
+
+        let mut bad_status = valid.clone();
+        bad_status.success_statuses = "created".to_string();
+        assert!(parse_upload_destination(&bad_status)
+            .unwrap_err()
+            .contains("HTTP status codes"));
+
+        let mut out_of_range_status = valid.clone();
+        out_of_range_status.success_statuses = "99".to_string();
+        assert!(parse_upload_destination(&out_of_range_status)
+            .unwrap_err()
+            .contains("invalid HTTP status"));
+
+        let mut empty_statuses = valid.clone();
+        empty_statuses.duplicate_statuses = " , ".to_string();
+        assert!(parse_upload_destination(&empty_statuses)
+            .unwrap_err()
+            .contains("at least one"));
+
+        let mut bad_query = valid.clone();
+        bad_query.query = "visibility".to_string();
+        assert!(parse_upload_destination(&bad_query)
+            .unwrap_err()
+            .contains("key=value"));
+
+        let mut bad_ping = valid;
+        bad_ping.ping_path = "health".to_string();
+        assert!(parse_upload_destination(&bad_ping)
+            .unwrap_err()
+            .contains("must start with /"));
+    }
 
     #[test]
     fn dedupes_failed_uploads_by_target_and_match() {

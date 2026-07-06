@@ -68,6 +68,37 @@ pub struct OverviewConfigFormData {
     pub window_decorations: String,
 }
 
+/// Form-shaped view of an [`crate::config::UploadDestinationConfig`], with
+/// every field kept as UI-friendly text (comma-separated status lists,
+/// `key=value` query pairs, auth kind + single value). Parsed back into the
+/// typed config by `parse_upload_destination`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UploadDestinationFormData {
+    pub name: String,
+    pub url: String,
+    /// One of `none`, `bearer`, `bearer_env`, `authorization_header`,
+    /// `bearer_command`.
+    pub auth_kind: String,
+    /// Token, env var name, header value, or whitespace-separated command,
+    /// depending on `auth_kind`.
+    pub auth_value: String,
+    /// Comma/newline-separated `key=value` pairs.
+    pub query: String,
+    pub ping_enabled: bool,
+    pub ping_path: String,
+    pub upload_enabled: bool,
+    pub upload_path: String,
+    pub upload_file_field: String,
+    /// Comma-separated HTTP status codes.
+    pub success_statuses: String,
+    /// Comma-separated HTTP status codes.
+    pub duplicate_statuses: String,
+    /// One of `none`, `endpoint`, `bundled`.
+    pub rank_upload_mode: String,
+    /// Endpoint path or multipart field, depending on `rank_upload_mode`.
+    pub rank_upload_value: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct UploadDestinationSummary {
     pub name: String,

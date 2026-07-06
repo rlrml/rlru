@@ -711,6 +711,10 @@ fn App() -> Element {
                     ActiveView::UploadDestinations => rsx! {
                         UploadDestinationsView {
                             summary: current_summary,
+                            onchanged: move |(updated, message): (AppSummary, String)| {
+                                summary.set(updated);
+                                action_message.set(message);
+                            },
                             onautoupload: move |enabled| {
                                 match save_auto_upload(enabled) {
                                     Ok(updated) => {

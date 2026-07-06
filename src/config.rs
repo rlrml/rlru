@@ -299,6 +299,28 @@ pub struct UploadDestinationConfig {
 }
 
 impl UploadDestinationConfig {
+    pub fn new(
+        name: String,
+        url: Url,
+        query: BTreeMap<String, String>,
+        auth: TargetAuth,
+        ping: PingConfig,
+        replay_upload: ReplayUploadConfig,
+        rank_upload: RankUploadConfig,
+    ) -> Self {
+        Self {
+            name,
+            url,
+            _legacy_predefined: IgnoredLegacyBool,
+            _legacy_primary: IgnoredLegacyBool,
+            query,
+            auth,
+            ping,
+            replay_upload,
+            rank_upload,
+        }
+    }
+
     pub fn rocky() -> Self {
         Self {
             name: "Rocky".to_string(),

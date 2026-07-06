@@ -1,13 +1,15 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use rlru::app::{
-    add_account, append_sync_errors, backfill_upload_destinations, begin_account_auth,
-    dedupe_upload_requests, failed_upload, finish_account_auth, format_backfill_message,
-    is_same_upload, is_same_upload_request, load_history, load_persisted_failed_uploads,
-    load_summary, now_label, remove_account, save_auto_upload, save_overview_config,
-    save_persisted_failed_uploads, short_match_id, upload_failure_reason, upload_history_replays,
-    upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary, BackfillSummary,
-    HistoryRow, HistoryUploadDestination, OverviewConfigFormData, ReplayUploadRequest,
-    SyncRunState,
+    add_account, add_upload_destination, append_sync_errors, backfill_upload_destinations,
+    begin_account_auth, dedupe_upload_requests, failed_upload, finish_account_auth,
+    format_backfill_message, is_same_upload, is_same_upload_request, load_history,
+    load_persisted_failed_uploads, load_summary, now_label, remove_account,
+    remove_upload_destination, save_auto_upload, save_overview_config,
+    save_persisted_failed_uploads, short_match_id, update_upload_destination,
+    upload_destination_form, upload_destination_preset_form, upload_failure_reason,
+    upload_history_replays, upsert_failed_upload, AccountAuthPrompt, AccountFormData, AppSummary,
+    BackfillSummary, HistoryRow, HistoryUploadDestination, OverviewConfigFormData,
+    ReplayUploadRequest, SyncRunState, UploadDestinationFormData,
 };
 #[cfg(all(feature = "desktop", target_os = "linux"))]
 pub(crate) use rlru::app::{
@@ -915,6 +917,132 @@ pub(crate) fn platform_preview_label(value: &str) -> &'static str {
         "nintendo" => "Nintendo",
         _ => "Epic",
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct UploadDestinationFormData {
+    pub(crate) name: String,
+    pub(crate) url: String,
+    pub(crate) auth_kind: String,
+    pub(crate) auth_value: String,
+    pub(crate) query: String,
+    pub(crate) ping_enabled: bool,
+    pub(crate) ping_path: String,
+    pub(crate) upload_enabled: bool,
+    pub(crate) upload_path: String,
+    pub(crate) upload_file_field: String,
+    pub(crate) success_statuses: String,
+    pub(crate) duplicate_statuses: String,
+    pub(crate) rank_upload_mode: String,
+    pub(crate) rank_upload_value: String,
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn upload_destination_preset_form(
+    preset: &str,
+) -> Result<UploadDestinationFormData, String> {
+    let (name, url, auth_kind) = match preset {
+        "rocket_sense" => (
+            "Rocket Sense",
+            "https://rocket-sense.duckdns.org/api/v1",
+            "bearer",
+        ),
+        "ballchasing" => (
+            "Ballchasing",
+            "https://ballchasing.com/api",
+            "authorization_header",
+        ),
+        "rocky" => ("Rocky", "https://lexore.ca/rocky/api", "none"),
+        "custom" => ("", "", "none"),
+        other => return Err(format!("Unsupported upload destination preset {other:?}")),
+    };
+    Ok(UploadDestinationFormData {
+        name: name.to_string(),
+        url: url.to_string(),
+        auth_kind: auth_kind.to_string(),
+        auth_value: String::new(),
+        query: String::new(),
+        ping_enabled: false,
+        ping_path: "/".to_string(),
+        upload_enabled: true,
+        upload_path: "/upload".to_string(),
+        upload_file_field: "file".to_string(),
+        success_statuses: "201".to_string(),
+        duplicate_statuses: "409".to_string(),
+        rank_upload_mode: "none".to_string(),
+        rank_upload_value: String::new(),
+    })
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn upload_destination_form(name: &str) -> Result<UploadDestinationFormData, String> {
+    let mut form = upload_destination_preset_form("rocket_sense")?;
+    form.name = name.to_string();
+    Ok(form)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn add_upload_destination(
+    input: UploadDestinationFormData,
+) -> Result<AppSummary, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Destination name is required".to_string());
+    }
+
+    let mut summary = load_summary();
+    if summary
+        .upload_destinations
+        .iter()
+        .any(|target| target.name == name)
+    {
+        return Err(format!("Upload destination {name:?} already exists"));
+    }
+    summary.upload_destinations.push(UploadDestinationSummary {
+        name: name.to_string(),
+        url: input.url.trim().to_string(),
+        upload_enabled: input.upload_enabled,
+        automatic: false,
+        auth: input.auth_kind,
+    });
+    Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn update_upload_destination(
+    original_name: &str,
+    input: UploadDestinationFormData,
+) -> Result<AppSummary, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Destination name is required".to_string());
+    }
+
+    let mut summary = load_summary();
+    let Some(destination) = summary
+        .upload_destinations
+        .iter_mut()
+        .find(|target| target.name == original_name)
+    else {
+        return Err(format!(
+            "Upload destination {original_name:?} no longer exists"
+        ));
+    };
+    destination.name = name.to_string();
+    destination.url = input.url.trim().to_string();
+    destination.upload_enabled = input.upload_enabled;
+    destination.auth = input.auth_kind;
+    Ok(summary)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn remove_upload_destination(name: &str) -> Result<AppSummary, String> {
+    let mut summary = load_summary();
+    summary
+        .upload_destinations
+        .retain(|target| target.name != name);
+    Ok(summary)
 }
 
 #[cfg(target_arch = "wasm32")]

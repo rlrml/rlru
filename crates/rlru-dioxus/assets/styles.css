@@ -546,6 +546,26 @@ small,
   padding: 0 10px;
 }
 
+.destination-form {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.destination-form .form-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  grid-column: 1 / -1;
+}
+
+.destination-form .form-row strong {
+  color: var(--text-strong);
+}
+
+.destination-form .notice {
+  margin-bottom: 0;
+}
+
 .checkbox-field {
   align-items: center;
   display: flex !important;

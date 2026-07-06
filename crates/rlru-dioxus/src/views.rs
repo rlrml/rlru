@@ -605,10 +605,26 @@ pub(crate) fn AccountsView(
     }
 }
 
+const DESTINATION_PRESETS: [(&str, &str); 4] = [
+    ("rocket_sense", "Rocket Sense"),
+    ("ballchasing", "Ballchasing"),
+    ("rocky", "Rocky"),
+    ("custom", "Custom"),
+];
+
+#[derive(Clone, Debug, PartialEq)]
+struct DestinationEditorState {
+    /// `Some` when editing an existing destination, `None` when adding.
+    original_name: Option<String>,
+    preset: String,
+    initial: UploadDestinationFormData,
+}
+
 #[component]
 pub(crate) fn UploadDestinationsView(
     summary: AppSummary,
     onautoupload: EventHandler<bool>,
+    onchanged: EventHandler<(AppSummary, String)>,
 ) -> Element {
     let auto_upload_value = if summary.auto_upload {
         "Enabled"
@@ -634,15 +650,100 @@ pub(crate) fn UploadDestinationsView(
         "Upload even while account is online"
     };
 
+    let destinations = summary.upload_destinations.clone();
+    let destination_count = destinations.len();
+    let can_remove = destination_count > 1;
+    let mut editor = use_signal(|| None::<DestinationEditorState>);
+    let mut editor_error = use_signal(String::new);
+    let mut confirming_remove = use_signal(|| None::<String>);
+    let editor_state = editor();
+    let standalone_error = if editor_state.is_some() {
+        String::new()
+    } else {
+        editor_error()
+    };
+
+    let mut open_editor = move |original_name: Option<String>, preset: String| {
+        let prefill = match &original_name {
+            Some(name) => upload_destination_form(name),
+            None => upload_destination_preset_form(&preset),
+        };
+        match prefill {
+            Ok(initial) => {
+                editor_error.set(String::new());
+                confirming_remove.set(None);
+                editor.set(Some(DestinationEditorState {
+                    original_name,
+                    preset,
+                    initial,
+                }));
+            }
+            Err(error) => editor_error.set(error),
+        }
+    };
+
+    let editor_view = editor_state.clone().map(|state| {
+        let form_key = match &state.original_name {
+            Some(name) => format!("edit-{name}"),
+            None => format!("add-{}", state.preset),
+        };
+        let submit_original = state.original_name.clone();
+        rsx! {
+            UploadDestinationForm {
+                key: "{form_key}",
+                initial: state.initial.clone(),
+                editing: state.original_name.clone(),
+                preset: if state.original_name.is_none() { Some(state.preset.clone()) } else { None },
+                error: editor_error(),
+                show_advanced_default: state.preset == "custom",
+                onpreset: move |preset: String| open_editor(None, preset),
+                onsubmit: move |form: UploadDestinationFormData| {
+                    let result = match submit_original.as_deref() {
+                        Some(original) => update_upload_destination(original, form),
+                        None => add_upload_destination(form),
+                    };
+                    match result {
+                        Ok(updated) => {
+                            let message = if submit_original.is_some() {
+                                "Upload destination updated"
+                            } else {
+                                "Upload destination added to config"
+                            };
+                            editor.set(None);
+                            editor_error.set(String::new());
+                            onchanged.call((updated, message.to_string()));
+                        }
+                        Err(error) => editor_error.set(error),
+                    }
+                },
+                oncancel: move |_| {
+                    editor.set(None);
+                    editor_error.set(String::new());
+                },
+            }
+        }
+    });
+
     rsx! {
         div { class: "destinations-view",
             section { class: "panel destinations-panel",
                 div { class: "panel-header",
                     h2 { "Upload Destinations" }
-                    span { "{summary.upload_destination_count()} destinations" }
+                    div { class: "button-row",
+                        span { "{destination_count} destinations" }
+                        button {
+                            class: "primary-button",
+                            onclick: move |_| open_editor(None, "rocket_sense".to_string()),
+                            "Add Destination"
+                        }
+                    }
                 }
+                if !standalone_error.is_empty() {
+                    div { class: "notice", "{standalone_error}" }
+                }
+                {editor_view}
                 div { class: "destination-list",
-                    for target in summary.upload_destinations {
+                    for target in destinations {
                         article { class: "account-row destination-row",
                             div {
                                 div { class: "row-title",
@@ -660,6 +761,64 @@ pub(crate) fn UploadDestinationsView(
                                         span { "Automatic" }
                                     } else {
                                         span { "Manual" }
+                                    }
+                                }
+                            }
+                            div { class: "row-actions",
+                                if confirming_remove() == Some(target.name.clone()) {
+                                    button {
+                                        class: "danger-button",
+                                        onclick: {
+                                            let remove_name = target.name.clone();
+                                            move |_| {
+                                                confirming_remove.set(None);
+                                                match remove_upload_destination(&remove_name) {
+                                                    Ok(updated) => {
+                                                        let editing_removed = editor()
+                                                            .as_ref()
+                                                            .and_then(|state| state.original_name.as_deref().map(str::to_string))
+                                                            == Some(remove_name.clone());
+                                                        if editing_removed {
+                                                            editor.set(None);
+                                                        }
+                                                        editor_error.set(String::new());
+                                                        onchanged.call((
+                                                            updated,
+                                                            format!("Removed upload destination {remove_name}"),
+                                                        ));
+                                                    }
+                                                    Err(error) => editor_error.set(error),
+                                                }
+                                            }
+                                        },
+                                        "Confirm Remove"
+                                    }
+                                    button {
+                                        class: "secondary-button",
+                                        onclick: move |_| confirming_remove.set(None),
+                                        "Cancel"
+                                    }
+                                } else {
+                                    button {
+                                        class: "secondary-button",
+                                        onclick: {
+                                            let edit_name = target.name.clone();
+                                            move |_| open_editor(Some(edit_name.clone()), String::new())
+                                        },
+                                        "Edit"
+                                    }
+                                    button {
+                                        class: "secondary-button",
+                                        disabled: !can_remove,
+                                        onclick: {
+                                            let confirm_name = target.name.clone();
+                                            move |_| {
+                                                if can_remove {
+                                                    confirming_remove.set(Some(confirm_name.clone()));
+                                                }
+                                            }
+                                        },
+                                        "Remove"
                                     }
                                 }
                             }
@@ -696,6 +855,215 @@ pub(crate) fn UploadDestinationsView(
                     dd { "{upload_on_launch}" }
                     dt { "Guard" }
                     dd { "{connection_guard}" }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn UploadDestinationForm(
+    initial: UploadDestinationFormData,
+    editing: Option<String>,
+    preset: Option<String>,
+    error: String,
+    show_advanced_default: bool,
+    onpreset: EventHandler<String>,
+    onsubmit: EventHandler<UploadDestinationFormData>,
+    oncancel: EventHandler<()>,
+) -> Element {
+    let initial_form = initial.clone();
+    let mut form = use_signal(move || initial_form.clone());
+    let mut show_advanced = use_signal(|| show_advanced_default);
+    let current = form();
+    let title = match &editing {
+        Some(name) => format!("Edit {name}"),
+        None => "New upload destination".to_string(),
+    };
+    let submit_label = if editing.is_some() {
+        "Save Destination"
+    } else {
+        "Add Destination"
+    };
+    let auth_value_field = match current.auth_kind.as_str() {
+        "bearer" => Some(("API token", "Paste API token")),
+        "bearer_env" => Some(("Token env var", "ROCKET_SENSE_TOKEN")),
+        "authorization_header" => Some(("Header value", "Authorization header value")),
+        "bearer_command" => Some(("Token command", "pass show my-token")),
+        _ => None,
+    };
+    let rank_value_field = match current.rank_upload_mode.as_str() {
+        "endpoint" => Some(("MMR endpoint path", "/v1/mmr")),
+        "bundled" => Some(("Rank multipart field", "ranks")),
+        _ => None,
+    };
+    let advanced_label = if show_advanced() {
+        "Hide Advanced Settings"
+    } else {
+        "Show Advanced Settings"
+    };
+
+    rsx! {
+        div { class: "account-form destination-form",
+            div { class: "form-row",
+                strong { "{title}" }
+            }
+            if let Some(preset) = preset {
+                label {
+                    span { "Preset" }
+                    select {
+                        value: "{preset}",
+                        onchange: move |event| onpreset.call(event.value()),
+                        for (value, label) in DESTINATION_PRESETS {
+                            option { value: "{value}", "{label}" }
+                        }
+                    }
+                }
+            }
+            label {
+                span { "Name" }
+                input {
+                    value: "{current.name}",
+                    placeholder: "Rocket Sense",
+                    oninput: move |event| form.with_mut(|data| data.name = event.value()),
+                }
+            }
+            label {
+                span { "URL" }
+                input {
+                    value: "{current.url}",
+                    placeholder: "https://example.com/api",
+                    oninput: move |event| form.with_mut(|data| data.url = event.value()),
+                }
+            }
+            label {
+                span { "Auth" }
+                select {
+                    value: "{current.auth_kind}",
+                    onchange: move |event| form.with_mut(|data| data.auth_kind = event.value()),
+                    option { value: "none", "None" }
+                    option { value: "bearer", "Bearer token" }
+                    option { value: "bearer_env", "Bearer token from env var" }
+                    option { value: "authorization_header", "Authorization header" }
+                    option { value: "bearer_command", "Bearer token from command" }
+                }
+            }
+            if let Some((label_text, placeholder)) = auth_value_field {
+                label {
+                    span { "{label_text}" }
+                    input {
+                        value: "{current.auth_value}",
+                        placeholder: "{placeholder}",
+                        oninput: move |event| form.with_mut(|data| data.auth_value = event.value()),
+                    }
+                }
+            }
+            div { class: "form-row",
+                button {
+                    class: "secondary-button",
+                    onclick: move |_| show_advanced.set(!show_advanced()),
+                    "{advanced_label}"
+                }
+            }
+            if show_advanced() {
+                label {
+                    span { "Query params" }
+                    input {
+                        value: "{current.query}",
+                        placeholder: "visibility=public",
+                        oninput: move |event| form.with_mut(|data| data.query = event.value()),
+                    }
+                }
+                label { class: "checkbox-field",
+                    input {
+                        r#type: "checkbox",
+                        checked: current.ping_enabled,
+                        oninput: move |event| form.with_mut(|data| data.ping_enabled = event.checked()),
+                    }
+                    span { "Ping before upload" }
+                }
+                label {
+                    span { "Ping path" }
+                    input {
+                        value: "{current.ping_path}",
+                        placeholder: "/health",
+                        oninput: move |event| form.with_mut(|data| data.ping_path = event.value()),
+                    }
+                }
+                label { class: "checkbox-field",
+                    input {
+                        r#type: "checkbox",
+                        checked: current.upload_enabled,
+                        oninput: move |event| form.with_mut(|data| data.upload_enabled = event.checked()),
+                    }
+                    span { "Replay upload enabled" }
+                }
+                label {
+                    span { "Upload path" }
+                    input {
+                        value: "{current.upload_path}",
+                        placeholder: "/upload",
+                        oninput: move |event| form.with_mut(|data| data.upload_path = event.value()),
+                    }
+                }
+                label {
+                    span { "File field" }
+                    input {
+                        value: "{current.upload_file_field}",
+                        placeholder: "file",
+                        oninput: move |event| form.with_mut(|data| data.upload_file_field = event.value()),
+                    }
+                }
+                label {
+                    span { "Success statuses" }
+                    input {
+                        value: "{current.success_statuses}",
+                        placeholder: "201",
+                        oninput: move |event| form.with_mut(|data| data.success_statuses = event.value()),
+                    }
+                }
+                label {
+                    span { "Duplicate statuses" }
+                    input {
+                        value: "{current.duplicate_statuses}",
+                        placeholder: "409",
+                        oninput: move |event| form.with_mut(|data| data.duplicate_statuses = event.value()),
+                    }
+                }
+                label {
+                    span { "Rank upload" }
+                    select {
+                        value: "{current.rank_upload_mode}",
+                        onchange: move |event| form.with_mut(|data| data.rank_upload_mode = event.value()),
+                        option { value: "none", "None" }
+                        option { value: "endpoint", "Separate MMR endpoint" }
+                        option { value: "bundled", "Bundled multipart field" }
+                    }
+                }
+                if let Some((label_text, placeholder)) = rank_value_field {
+                    label {
+                        span { "{label_text}" }
+                        input {
+                            value: "{current.rank_upload_value}",
+                            placeholder: "{placeholder}",
+                            oninput: move |event| form.with_mut(|data| data.rank_upload_value = event.value()),
+                        }
+                    }
+                }
+            }
+            if !error.is_empty() {
+                div { class: "notice form-row", "{error}" }
+            }
+            div { class: "form-row",
+                button {
+                    class: "primary-button",
+                    onclick: move |_| onsubmit.call(form()),
+                    "{submit_label}"
+                }
+                button {
+                    class: "secondary-button",
+                    onclick: move |_| oncancel.call(()),
+                    "Cancel"
                 }
             }
         }
