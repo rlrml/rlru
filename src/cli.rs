@@ -49,6 +49,18 @@ enum Command {
         #[command(subcommand)]
         command: SyncCommand,
     },
+    /// Decode a local custom training pack (`.tem`) and publish it to PsyNet,
+    /// printing the public share code.
+    PublishTraining {
+        /// Path to the `.tem` training pack file.
+        path: PathBuf,
+        /// Account to publish as (defaults to the selected account).
+        #[arg(long)]
+        account: Option<String>,
+        /// Override the pack name sent to PsyNet.
+        #[arg(long)]
+        name: Option<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -179,7 +191,52 @@ pub async fn run() -> Result<()> {
             match_id,
         } => handle_upload_file(&paths, &config_path, &target, &path, match_id).await,
         Command::Sync { command } => handle_sync_command(command, paths, &config_path).await,
+        Command::PublishTraining {
+            path,
+            account,
+            name,
+        } => handle_publish_training(&paths, &config_path, &path, account, name).await,
     }
+}
+
+async fn handle_publish_training(
+    paths: &AppPaths,
+    config_path: &Path,
+    path: &Path,
+    account: Option<String>,
+    name: Option<String>,
+) -> Result<()> {
+    // Reuse the same account/auth resolution as `rlru auth`.
+    let (auth, account_label) = resolve_auth_manager(paths, config_path, account, None)?;
+
+    let pack = rlru::training::decode_pack(path)?;
+    let request = rlru::training::pack_to_save_request(&pack, name.as_deref());
+    println!(
+        "publishing {:?} ({} rounds, type {}, difficulty {}) as {account_label}",
+        request.tm_name, request.num_rounds, request.training_type, request.difficulty
+    );
+
+    let eos = auth
+        .restore_or_refresh()
+        .await
+        .context("failed to restore/refresh PsyNet session")?;
+    let client = rlru::psynet::PsyNetClient::new();
+    let rpc = client
+        .auth_player(
+            &eos.account_id,
+            secrecy::ExposeSecret::expose_secret(&eos.access_token),
+        )
+        .await
+        .context("failed to authenticate PsyNet session")?;
+
+    let response = rpc
+        .save_training_data(request)
+        .await
+        .context("PsyNet rejected the training pack")?;
+    rpc.close().await.ok();
+
+    println!("published training pack; share code: {}", response.code);
+    Ok(())
 }
 
 async fn handle_account_command(

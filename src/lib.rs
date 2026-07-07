@@ -5,6 +5,7 @@ pub mod daemon;
 pub mod paths;
 pub(crate) mod state_file;
 pub mod sync;
+pub mod training;
 pub mod upload;
 pub mod upload_name;
 pub mod version;

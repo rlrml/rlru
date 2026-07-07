@@ -302,11 +302,59 @@ impl PsyNetRpc {
         Ok(response.players)
     }
 
+    /// Sends a raw request to an arbitrary PsyNet service (e.g.
+    /// `"Training/GetTrainingData v1"`) and returns the raw `Result` JSON on
+    /// success, or the application-level [`PsyError`] (kind + message) when the
+    /// server responds with an `Error` payload. Transport-level failures
+    /// (socket errors, timeouts, malformed frames) surface as the outer
+    /// `anyhow::Error`.
+    pub async fn call_raw(
+        &self,
+        service: &str,
+        body: &serde_json::Value,
+    ) -> Result<std::result::Result<String, PsyError>> {
+        let response = self.send_request_raw(service, body).await?;
+        if let Some(error) = response.error {
+            return Ok(Err(error));
+        }
+        let result = response
+            .result
+            .context("PsyNet response did not include Result")?;
+        Ok(Ok(result.get().to_string()))
+    }
+
+    /// Publishes a custom training pack to PsyNet via `Training/AddTrainingData
+    /// v1` and returns the freshly minted public share [`Code`](SaveTrainingResponse::code).
+    ///
+    /// The request body is `{"TrainingData": <pack>}`. The server ignores the
+    /// `Code`/timestamp/creator identity fields (it assigns them), but requires
+    /// a fresh, valid base64 `TM_Guid` plus the pack metadata and rounds.
+    /// Discovered empirically against the live server; see
+    /// `examples/training_*.rs`.
+    pub async fn save_training_data(&self, pack: SaveTrainingData) -> Result<SaveTrainingResponse> {
+        let request = SaveTrainingRequest {
+            training_data: pack,
+        };
+        self.send_request("Training/AddTrainingData v1", &request)
+            .await
+    }
+
     async fn send_request<T: for<'de> Deserialize<'de>>(
         &self,
         service: &str,
         data: &impl Serialize,
     ) -> Result<T> {
+        let response = self.send_request_raw(service, data).await?;
+        if let Some(error) = response.error {
+            bail!("{error}");
+        }
+        let result = response
+            .result
+            .context("PsyNet response did not include Result")?;
+        serde_json::from_str(result.get()).context("failed to parse PsyNet response Result")
+    }
+
+    async fn send_request_raw(&self, service: &str, data: &impl Serialize) -> Result<PsyResponse> {
         let request_id = self.request_ids.next();
         let (sender, receiver) = oneshot::channel();
 
@@ -328,17 +376,10 @@ impl PsyNetRpc {
             return Err(error).context("failed to send PsyNet websocket request");
         }
 
-        let response = timeout(RESPONSE_TIMEOUT, receiver)
+        timeout(RESPONSE_TIMEOUT, receiver)
             .await
             .context("timed out waiting for PsyNet response")?
-            .context("PsyNet response channel closed")?;
-        if let Some(error) = response.error {
-            bail!("PsyNet error {}: {}", error.kind, error.message);
-        }
-        let result = response
-            .result
-            .context("PsyNet response did not include Result")?;
-        serde_json::from_str(result.get()).context("failed to parse PsyNet response Result")
+            .context("PsyNet response channel closed")
     }
 }
 
@@ -619,13 +660,92 @@ struct GetPlayersSkillsResponse {
     players: Vec<PlayerWithSkills>,
 }
 
-#[derive(Debug, Deserialize)]
-struct PsyError {
-    #[serde(rename = "Type")]
-    kind: String,
-    #[serde(rename = "Message")]
-    message: String,
+/// Envelope for `Training/AddTrainingData v1`: the pack object must be nested
+/// under `TrainingData`.
+#[derive(Debug, Clone, Serialize)]
+struct SaveTrainingRequest {
+    #[serde(rename = "TrainingData")]
+    training_data: SaveTrainingData,
 }
+
+/// A training pack to publish. Field names mirror the PsyNet wire schema (and
+/// the game's `TAGame.TrainingEditorData_TA` UStruct). Only `TM_Guid`,
+/// `TM_Name`, `Type`, `Difficulty`, `MapName`, `Tags`, `NumRounds`, and
+/// `Rounds` are required; the server assigns `Code`/timestamps/creator.
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveTrainingData {
+    /// Base64-encoded 16-byte pack GUID. Must be present and valid; generate a
+    /// fresh one for a new pack (see [`SaveTrainingData::new_guid`]).
+    #[serde(rename = "TM_Guid")]
+    pub tm_guid: String,
+    #[serde(rename = "TM_Name")]
+    pub tm_name: String,
+    /// `ETrainingType` ordinal: None=0, Aerial=1, Goalie=2, Striker=3, End=4.
+    #[serde(rename = "Type")]
+    pub training_type: i32,
+    /// `EDifficulty` ordinal.
+    #[serde(rename = "Difficulty")]
+    pub difficulty: i32,
+    #[serde(rename = "MapName")]
+    pub map_name: String,
+    #[serde(rename = "Tags")]
+    pub tags: Vec<String>,
+    #[serde(rename = "NumRounds")]
+    pub num_rounds: i32,
+    #[serde(rename = "Rounds")]
+    pub rounds: Vec<SaveTrainingRound>,
+    /// Optional free-text description (the game sends this; the server accepts
+    /// packs without it).
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+impl SaveTrainingData {
+    /// Generates a fresh random base64-encoded 16-byte GUID suitable for
+    /// [`SaveTrainingData::tm_guid`].
+    pub fn new_guid() -> String {
+        let mut bytes = [0u8; 16];
+        getrandom::fill(&mut bytes).expect("system RNG available");
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+}
+
+/// One round of a training pack. `serialized_archetypes` are the raw UE
+/// archetype strings (ball spawn, dynamic spawn point, player car) preserved
+/// verbatim.
+#[derive(Debug, Clone, Serialize)]
+pub struct SaveTrainingRound {
+    #[serde(rename = "TimeLimit")]
+    pub time_limit: f32,
+    #[serde(rename = "SerializedArchetypes")]
+    pub serialized_archetypes: Vec<String>,
+}
+
+/// Response from `Training/AddTrainingData v1`: the newly assigned public share
+/// code (e.g. `"9F94-DF9F-0460-7481"`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SaveTrainingResponse {
+    #[serde(rename = "Code")]
+    pub code: String,
+}
+
+/// An application-level error returned by PsyNet inside an otherwise
+/// successful RPC response (`{"Error": {"Type": ..., "Message": ...}}`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PsyError {
+    #[serde(rename = "Type")]
+    pub kind: String,
+    #[serde(rename = "Message")]
+    pub message: String,
+}
+
+impl std::fmt::Display for PsyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "PsyNet error {}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for PsyError {}
 
 #[derive(Debug, Deserialize)]
 struct PsyHttpWrapper {
