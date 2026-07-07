@@ -1,61 +1,94 @@
 use super::*;
-use subtr_actor_training::{Difficulty, Guid, PlayerId, Round, TrainingPack, TrainingType};
+use psynet::{SaveTrainingData, SaveTrainingRound};
 
-fn sample_pack() -> TrainingPack {
-    TrainingPack {
-        guid: Guid::default(),
-        code: None,
-        name: Some("My Pack".to_string()),
-        training_type: TrainingType::Striker,
-        difficulty: Difficulty::Medium,
-        creator_name: None,
-        description: Some("desc".to_string()),
+fn sample_payload() -> SaveTrainingData {
+    SaveTrainingData {
+        tm_guid: String::new(),
+        tm_name: "My Pack".to_string(),
+        training_type: 3,
+        difficulty: 1,
+        map_name: "Park_P".to_string(),
         tags: vec![],
-        map_name: Some("Park_P".to_string()),
-        created_at: 0,
-        updated_at: 0,
-        creator_player_id: PlayerId::default(),
-        rounds: vec![Round {
+        num_rounds: 0,
+        rounds: vec![SaveTrainingRound {
             time_limit: 8.0,
             serialized_archetypes: vec!["{\"a\":1}".to_string()],
         }],
-        player_team_number: 0,
-        unowned: false,
-        perfect_completed: false,
-        shots_completed: 0,
+        description: Some("desc".to_string()),
     }
 }
 
 #[test]
-fn maps_core_fields_and_enums() {
-    let pack = sample_pack();
-    let req = pack_to_save_request(&pack, None);
+fn deserializes_pascal_case_payload_with_optional_fields_omitted() {
+    let json = r#"{
+        "TM_Name": "JSON Pack",
+        "Type": 3,
+        "Difficulty": 1,
+        "MapName": "Park_P",
+        "Rounds": [
+            {"TimeLimit": 8.0, "SerializedArchetypes": ["{\"a\":1}"]}
+        ]
+    }"#;
+    let payload: SaveTrainingData = serde_json::from_str(json).expect("parses");
+    assert_eq!(payload.tm_name, "JSON Pack");
+    assert_eq!(payload.tm_guid, "");
+    assert_eq!(payload.tags, Vec::<String>::new());
+    assert_eq!(payload.num_rounds, 0);
+    assert_eq!(payload.rounds.len(), 1);
+    assert_eq!(payload.description, None);
+}
 
-    assert_eq!(req.tm_name, "My Pack");
-    assert_eq!(req.training_type, 3); // Striker
-    assert_eq!(req.difficulty, 1); // Medium
-    assert_eq!(req.map_name, "Park_P");
-    assert_eq!(req.num_rounds, 1);
-    assert_eq!(req.rounds.len(), 1);
-    assert_eq!(req.rounds[0].time_limit, 8.0);
-    assert_eq!(req.description.as_deref(), Some("desc"));
+#[test]
+fn finalize_mints_guid_and_recomputes_num_rounds() {
+    let finalized = finalize_payload(sample_payload(), None).expect("finalizes");
+    assert_eq!(finalized.num_rounds, 1);
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(&finalized.tm_guid)
+        .expect("valid base64 guid");
+    assert_eq!(decoded.len(), 16);
+}
+
+#[test]
+fn finalize_preserves_valid_supplied_guid() {
+    let mut payload = sample_payload();
+    let guid = SaveTrainingData::new_guid();
+    payload.tm_guid = guid.clone();
+    let finalized = finalize_payload(payload, None).expect("finalizes");
+    assert_eq!(finalized.tm_guid, guid);
+}
+
+#[test]
+fn finalize_rejects_malformed_guid() {
+    let mut payload = sample_payload();
+    payload.tm_guid = "not-base64!!".to_string();
+    assert!(finalize_payload(payload, None).is_err());
+
+    let mut payload = sample_payload();
+    payload.tm_guid = base64::engine::general_purpose::STANDARD.encode([0u8; 8]);
+    assert!(finalize_payload(payload, None).is_err());
 }
 
 #[test]
 fn name_override_takes_precedence() {
-    let pack = sample_pack();
-    let req = pack_to_save_request(&pack, Some("renamed"));
-    assert_eq!(req.tm_name, "renamed");
+    let finalized = finalize_payload(sample_payload(), Some("renamed")).expect("finalizes");
+    assert_eq!(finalized.tm_name, "renamed");
 }
 
 #[test]
-fn generates_distinct_valid_base64_guids() {
-    use base64::Engine;
-    let a = SaveTrainingData::new_guid();
-    let b = SaveTrainingData::new_guid();
-    assert_ne!(a, b);
-    let decoded = base64::engine::general_purpose::STANDARD
-        .decode(&a)
-        .expect("valid base64 guid");
-    assert_eq!(decoded.len(), 16);
+fn finalize_rejects_empty_name_rounds_and_map() {
+    let mut payload = sample_payload();
+    payload.tm_name = "  ".to_string();
+    assert!(finalize_payload(payload, None).is_err());
+
+    let mut payload = sample_payload();
+    payload.rounds.clear();
+    assert!(finalize_payload(payload, None).is_err());
+
+    let mut payload = sample_payload();
+    payload.rounds[0].serialized_archetypes.clear();
+    assert!(finalize_payload(payload, None).is_err());
+
+    let mut payload = sample_payload();
+    payload.map_name = String::new();
+    assert!(finalize_payload(payload, None).is_err());
 }

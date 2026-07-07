@@ -49,10 +49,12 @@ enum Command {
         #[command(subcommand)]
         command: SyncCommand,
     },
-    /// Decode a local custom training pack (`.tem`) and publish it to PsyNet,
-    /// printing the public share code.
+    /// Publish a structured training-pack payload (JSON matching the PsyNet
+    /// `SaveTrainingData` schema, produced by e.g. the subtr-actor stats
+    /// player or a `.tem`-to-payload exporter) and print the public share
+    /// code.
     PublishTraining {
-        /// Path to the `.tem` training pack file.
+        /// Path to the structured JSON payload file.
         path: PathBuf,
         /// Account to publish as (defaults to the selected account).
         #[arg(long)]
@@ -209,8 +211,8 @@ async fn handle_publish_training(
     // Reuse the same account/auth resolution as `rlru auth`.
     let (auth, account_label) = resolve_auth_manager(paths, config_path, account, None)?;
 
-    let pack = rlru::training::decode_pack(path)?;
-    let request = rlru::training::pack_to_save_request(&pack, name.as_deref());
+    let payload = rlru::training::load_payload(path)?;
+    let request = rlru::training::finalize_payload(payload, name.as_deref())?;
     println!(
         "publishing {:?} ({} rounds, type {}, difficulty {}) as {account_label}",
         request.tm_name, request.num_rounds, request.training_type, request.difficulty

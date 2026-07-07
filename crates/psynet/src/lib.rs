@@ -672,11 +672,16 @@ struct SaveTrainingRequest {
 /// the game's `TAGame.TrainingEditorData_TA` UStruct). Only `TM_Guid`,
 /// `TM_Name`, `Type`, `Difficulty`, `MapName`, `Tags`, `NumRounds`, and
 /// `Rounds` are required; the server assigns `Code`/timestamps/creator.
-#[derive(Debug, Clone, Serialize)]
+///
+/// Deserializes from the same PascalCase JSON it serializes to, so a
+/// structured payload file can be read directly into this type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveTrainingData {
-    /// Base64-encoded 16-byte pack GUID. Must be present and valid; generate a
-    /// fresh one for a new pack (see [`SaveTrainingData::new_guid`]).
-    #[serde(rename = "TM_Guid")]
+    /// Base64-encoded 16-byte pack GUID. Must be present and valid on the
+    /// wire; generate a fresh one for a new pack (see
+    /// [`SaveTrainingData::new_guid`]). May be omitted in payload files
+    /// (deserializes to empty); callers should mint a GUID before publishing.
+    #[serde(rename = "TM_Guid", default)]
     pub tm_guid: String,
     #[serde(rename = "TM_Name")]
     pub tm_name: String,
@@ -688,9 +693,11 @@ pub struct SaveTrainingData {
     pub difficulty: i32,
     #[serde(rename = "MapName")]
     pub map_name: String,
-    #[serde(rename = "Tags")]
+    #[serde(rename = "Tags", default)]
     pub tags: Vec<String>,
-    #[serde(rename = "NumRounds")]
+    /// Number of rounds. May be omitted in payload files (deserializes to 0);
+    /// callers should set it to `rounds.len()` before publishing.
+    #[serde(rename = "NumRounds", default)]
     pub num_rounds: i32,
     #[serde(rename = "Rounds")]
     pub rounds: Vec<SaveTrainingRound>,
@@ -713,7 +720,7 @@ impl SaveTrainingData {
 /// One round of a training pack. `serialized_archetypes` are the raw UE
 /// archetype strings (ball spawn, dynamic spawn point, player car) preserved
 /// verbatim.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveTrainingRound {
     #[serde(rename = "TimeLimit")]
     pub time_limit: f32,
