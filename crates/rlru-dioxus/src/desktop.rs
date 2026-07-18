@@ -71,22 +71,65 @@ fn should_disable_window_decorations_for(
 }
 
 #[cfg(feature = "desktop")]
-fn configured_window_decorations() -> rlru::config::WindowDecorationsConfig {
+fn configured_behavior() -> rlru::config::BehaviorConfig {
     let paths = match rlru::paths::AppPaths::discover() {
         Ok(paths) => paths,
         Err(error) => {
-            eprintln!("Failed to discover rlru config path for window decorations: {error}");
-            return rlru::config::WindowDecorationsConfig::Auto;
+            eprintln!("Failed to discover rlru config path for desktop startup options: {error}");
+            return rlru::config::BehaviorConfig::default();
         }
     };
 
     match rlru::Config::load_or_default(&paths.config_file()) {
-        Ok(config) => config.behavior.window_decorations,
+        Ok(config) => config.behavior,
         Err(error) => {
-            eprintln!("Failed to read rlru window decorations config: {error}");
-            rlru::config::WindowDecorationsConfig::Auto
+            eprintln!("Failed to read rlru desktop startup config: {error}");
+            rlru::config::BehaviorConfig::default()
         }
     }
+}
+
+#[cfg(feature = "desktop")]
+fn configured_window_decorations() -> rlru::config::WindowDecorationsConfig {
+    configured_behavior().window_decorations
+}
+
+/// Whether the desktop window should start hidden, with only the tray icon
+/// shown. `RLRU_START_IN_TRAY` overrides the `behavior.start_in_tray` config
+/// value. Only honored where the tray icon is available (Linux); elsewhere a
+/// hidden window would be unrecoverable.
+#[cfg(feature = "desktop")]
+fn configured_start_in_tray() -> bool {
+    if !cfg!(target_os = "linux") {
+        return false;
+    }
+    if let Some(value) = std::env::var_os("RLRU_START_IN_TRAY") {
+        match parse_bool_setting(&value.to_string_lossy()) {
+            Some(value) => return value,
+            None => eprintln!(
+                "Invalid RLRU_START_IN_TRAY value {value:?}; use true/false or 1/0"
+            ),
+        }
+    }
+    configured_behavior().start_in_tray
+}
+
+#[cfg(feature = "desktop")]
+fn parse_bool_setting(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "desktop")]
+static STARTED_IN_TRAY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+#[cfg(feature = "desktop")]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn started_in_tray() -> bool {
+    STARTED_IN_TRAY.get().copied().unwrap_or(false)
 }
 
 #[cfg(feature = "desktop")]
@@ -334,7 +377,12 @@ pub(crate) fn launch_app() {
         }
     }
 
-    let mut window = WindowBuilder::new().with_title("rlru").with_visible(true);
+    let start_in_tray = configured_start_in_tray();
+    let _ = STARTED_IN_TRAY.set(start_in_tray);
+
+    let mut window = WindowBuilder::new()
+        .with_title("rlru")
+        .with_visible(!start_in_tray);
     if should_disable_window_decorations() {
         window = window.with_decorations(false);
     }

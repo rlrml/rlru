@@ -16,6 +16,16 @@ in {
       description = "The rlru desktop package to run.";
     };
 
+    startInTray = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Start the rlru desktop window hidden, with only the tray icon shown.
+        Sets RLRU_START_IN_TRAY=1 for the service, overriding the
+        behavior.start_in_tray config file value.
+      '';
+    };
+
     environment = lib.mkOption {
       type = lib.types.attrsOf lib.types.str;
       default = {
@@ -39,7 +49,10 @@ in {
 
       Service = {
         ExecStart = lib.getExe cfg.package;
-        Environment = lib.mapAttrsToList (name: value: "${name}=${value}") cfg.environment;
+        Environment =
+          lib.mapAttrsToList (name: value: "${name}=${value}")
+          (cfg.environment
+            // lib.optionalAttrs cfg.startInTray {RLRU_START_IN_TRAY = "1";});
         Restart = "on-failure";
         RestartSec = "5s";
       };

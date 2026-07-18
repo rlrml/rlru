@@ -483,6 +483,7 @@ pub(crate) struct AppSummary {
     pub(crate) auto_upload: bool,
     pub(crate) upload_on_launch: bool,
     pub(crate) no_upload_while_connected: bool,
+    pub(crate) start_in_tray: bool,
     pub(crate) window_decorations: String,
     pub(crate) selected_account: Option<String>,
     pub(crate) selected_upload_destination: Option<String>,
@@ -539,6 +540,7 @@ pub(crate) struct OverviewConfigFormData {
     pub(crate) auto_upload_jitter_minutes: String,
     pub(crate) upload_on_launch: bool,
     pub(crate) no_upload_while_connected: bool,
+    pub(crate) start_in_tray: bool,
     pub(crate) window_decorations: String,
 }
 
@@ -847,6 +849,7 @@ pub(crate) fn load_summary() -> AppSummary {
         auto_upload: true,
         upload_on_launch: false,
         no_upload_while_connected: false,
+        start_in_tray: false,
         window_decorations: "auto".to_string(),
         selected_account: Some("colonelpanic8".to_string()),
         selected_upload_destination: Some("Rocket Sense".to_string()),
@@ -1076,6 +1079,7 @@ pub(crate) fn save_overview_config(input: OverviewConfigFormData) -> Result<AppS
     summary.auto_upload_jitter_minutes = jitter_minutes;
     summary.upload_on_launch = input.upload_on_launch;
     summary.no_upload_while_connected = input.no_upload_while_connected;
+    summary.start_in_tray = input.start_in_tray;
     summary.window_decorations = input.window_decorations;
     summary.interval = format!("Every {interval_minutes} minutes");
     summary.jitter = format!("{jitter_minutes} minutes");

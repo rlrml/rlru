@@ -163,6 +163,7 @@ fn summary_from_config(
         auto_upload,
         upload_on_launch: config.behavior.upload_on_launch,
         no_upload_while_connected: config.behavior.no_upload_while_connected,
+        start_in_tray: config.behavior.start_in_tray,
         window_decorations: window_decorations_value(config.behavior.window_decorations)
             .to_string(),
         selected_account,
@@ -189,6 +190,7 @@ fn unavailable_summary(error: String) -> AppSummary {
         auto_upload: false,
         upload_on_launch: false,
         no_upload_while_connected: false,
+        start_in_tray: false,
         window_decorations: window_decorations_value(WindowDecorationsConfig::Auto).to_string(),
         selected_account: None,
         selected_upload_destination: None,
@@ -810,6 +812,7 @@ pub fn save_overview_config(input: OverviewConfigFormData) -> Result<AppSummary,
         behavior.auto_upload_jitter_max = Duration::from_secs(jitter_minutes * 60);
         behavior.upload_on_launch = input.upload_on_launch;
         behavior.no_upload_while_connected = input.no_upload_while_connected;
+        behavior.start_in_tray = input.start_in_tray;
         behavior.window_decorations = window_decorations;
     })
 }

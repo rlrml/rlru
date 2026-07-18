@@ -58,7 +58,7 @@ pub(crate) fn DesktopTrayBridge(
     use futures_util::StreamExt;
 
     let mut tray_state = use_signal(|| None);
-    let mut window_hidden_to_tray = use_signal(|| false);
+    let mut window_hidden_to_tray = use_signal(crate::desktop::started_in_tray);
     let command_handler = use_coroutine(
         move |mut receiver: UnboundedReceiver<TrayCommand>| async move {
             while let Some(command) = receiver.next().await {
@@ -88,6 +88,11 @@ pub(crate) fn DesktopTrayBridge(
             WindowCloseBehaviour::WindowCloses
         };
         dioxus::desktop::window().set_close_behavior(behaviour);
+        if state.is_none() && window_hidden_to_tray() {
+            // Started hidden but there is no tray icon to restore from; show
+            // the window so the app is not stranded invisible.
+            show_window(window_hidden_to_tray);
+        }
         tray_state.set(state);
     });
 

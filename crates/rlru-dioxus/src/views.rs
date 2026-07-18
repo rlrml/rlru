@@ -88,6 +88,7 @@ pub(crate) fn OverviewView(
     let mut jitter_minutes = use_signal(|| summary.auto_upload_jitter_minutes.to_string());
     let mut upload_on_launch = use_signal(|| summary.upload_on_launch);
     let mut no_upload_while_connected = use_signal(|| summary.no_upload_while_connected);
+    let mut start_in_tray = use_signal(|| summary.start_in_tray);
     let mut window_decorations = use_signal(|| summary.window_decorations.clone());
 
     rsx! {
@@ -152,6 +153,14 @@ pub(crate) fn OverviewView(
                     }
                     span { "Skip accounts that are online" }
                 }
+                label { class: "checkbox-field",
+                    input {
+                        r#type: "checkbox",
+                        checked: start_in_tray(),
+                        oninput: move |event| start_in_tray.set(event.checked()),
+                    }
+                    span { "Start hidden in tray" }
+                }
                 label {
                     span { "Window decorations" }
                     select {
@@ -170,6 +179,7 @@ pub(crate) fn OverviewView(
                             auto_upload_jitter_minutes: jitter_minutes().trim().to_string(),
                             upload_on_launch: upload_on_launch(),
                             no_upload_while_connected: no_upload_while_connected(),
+                            start_in_tray: start_in_tray(),
                             window_decorations: window_decorations(),
                         });
                     },
