@@ -4249,7 +4249,7 @@ checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
 
 [[package]]
 name = "psynet"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "base64",
@@ -4694,7 +4694,7 @@ dependencies = [
 
 [[package]]
 name = "rlru"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "anyhow",
  "base64",
@@ -4719,7 +4719,7 @@ dependencies = [
 
 [[package]]
 name = "rlru-dioxus"
-version = "0.1.35"
+version = "0.1.36"
 dependencies = [
  "chrono",
  "dioxus",

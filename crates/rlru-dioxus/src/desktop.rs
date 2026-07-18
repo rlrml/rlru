@@ -106,9 +106,7 @@ fn configured_start_in_tray() -> bool {
     if let Some(value) = std::env::var_os("RLRU_START_IN_TRAY") {
         match parse_bool_setting(&value.to_string_lossy()) {
             Some(value) => return value,
-            None => eprintln!(
-                "Invalid RLRU_START_IN_TRAY value {value:?}; use true/false or 1/0"
-            ),
+            None => eprintln!("Invalid RLRU_START_IN_TRAY value {value:?}; use true/false or 1/0"),
         }
     }
     configured_behavior().start_in_tray
